@@ -114,12 +114,23 @@ B(3,2) = -L_x * k_T;
 B(3,3) =  L_x * k_T * c2;
 B(3,4) = -L_x * k_T;
 
-% 4. Yaw (τz) - THE COMPLEX PART
-% (Drag Torque component) + (Thrust Vectoring component)
-B(4,1) = ( k_M * c0) - (L_y * k_T * s0); % Motor 0 (CCW, Right Arm)
-B(4,2) = ( k_M);                         % Motor 1 (CCW, Left Arm, Fixed)
-B(4,3) = (-k_M * c2) + (L_y * k_T * s2); % Motor 2 (CW, Left Arm)
-B(4,4) = (-k_M);                         % Motor 3 (CW, Right Arm, Fixed)
+% 4. Yaw (τz) - SIMPLIFIED TO AVOID SINGULARITY
+% When tilted, front rotors have conflicting yaw contributions (drag vs thrust vectoring)
+% This causes singularity around 9.7 deg. Solution: use only fixed rear rotors for yaw.
+% Front rotors: set yaw contribution to 0 when tilted
+if a0 > 0.05 || a2 > 0.05  % ~3 deg threshold
+    % Tilted: rear motors only for yaw
+    B(4,1) = 0;
+    B(4,2) = k_M;      % Motor 1 (CCW, Fixed) -> positive yaw
+    B(4,3) = 0;
+    B(4,4) = -k_M;     % Motor 3 (CW, Fixed) -> negative yaw
+else
+    % Hover: all motors contribute
+    B(4,1) = k_M;      % Motor 0 (CCW)
+    B(4,2) = k_M;      % Motor 1 (CCW)
+    B(4,3) = -k_M;     % Motor 2 (CW)
+    B(4,4) = -k_M;     % Motor 3 (CW)
+end
 
 %% 4. Compute Output
 if strcmp(mode, 'inverse')
