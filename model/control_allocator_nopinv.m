@@ -1,4 +1,4 @@
-function [output, B] = control_allocator(input, params, mode)
+function [output, B] = control_allocator_nopinv(input, params, mode)
 % control_allocator: Quadrotor/Hexarotor control allocation
 %
 % Usage:
@@ -146,7 +146,7 @@ B = [
 
 %% Compute output
 if strcmp(mode, 'inverse')
-    output = pinv(B) * input;
+    output = B \ input;
 else
     output = B * input;
 end
