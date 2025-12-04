@@ -106,18 +106,18 @@ L = params.drone.body.L;        % Arm length [m]
 %         (CW)   (CCW)
 %            \    /
 %     M3 -----+-----→ Y+ (Right)
-%    (CCW)    |    M6 (CCW)
+%    (CCW)    |    M6 (CW)
 %            /    \
 %         M4      M5
-%        (CW)    (CW)
+%        (CW)    (CCW)
 %
 %  Motor positions (angle from X+, CCW positive):
 %    M1: 30°,  (x,y) = (+L*√3/2, +L/2),   CCW
 %    M2: 330°, (x,y) = (+L*√3/2, -L/2),   CW
 %    M3: 270°, (x,y) = (0,       -L),     CCW
 %    M4: 210°, (x,y) = (-L*√3/2, -L/2),   CW
-%    M5: 150°, (x,y) = (-L*√3/2, +L/2),   CW
-%    M6: 90°,  (x,y) = (0,       +L),     CCW
+%    M5: 150°, (x,y) = (-L*√3/2, +L/2),   CCW
+%    M6: 90°,  (x,y) = (0,       +L),     CW
 %
 %  Torque equations (NED):
 %    τx (roll)  = Σ(-y_i × k × ω_i²)
@@ -128,7 +128,7 @@ s3 = sqrt(3)/2;  % ≈ 0.866
 
 %          M1        M2        M3        M4        M5        M6
 %        (30°)    (330°)    (270°)    (210°)    (150°)     (90°)
-%         CCW       CW       CCW        CW        CW        CCW
+%         CCW       CW       CCW        CW        CCW        CW
 
 B = [
 % T: total thrust
@@ -141,7 +141,7 @@ B = [
   k*L*s3,  k*L*s3,    0,      -k*L*s3, -k*L*s3,    0;
 
 % τz (yaw): CCW(+b), CW(-b)
-   b,       -b,        b,       -b,       -b,       b
+   b,       -b,        b,       -b,       b,       -b
 ];
 
 %% Compute output

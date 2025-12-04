@@ -1,24 +1,15 @@
-%% main.m - Position Control Test (Hexarotor)
+%% main_hexa_test.m - Hexarotor Attitude & Altitude Control Test
 clear; clc; close all;
-
 addpath(genpath('math'));
 addpath(genpath('model'));
 addpath(genpath('ctrl'));
 addpath(genpath('disturbance'));
 
-%% Parameters
+%% Parameters (Hexarotor)
 params = params_init('hexa');
 
 %% Disturbance settings
-% dist_preset = 'nominal';  % 'nominal', 'level1', 'level2', 'level3'
-% dist_preset = 'level1';  % 'nominal', 'level1', 'level2', 'level3'
 dist_preset = 'level2';  % 'nominal', 'level1', 'level2', 'level3'
-% dist_preset = 'level3';  % 'nominal', 'level1', 'level2', 'level3'
-% dist_preset = 'paper';  % 'nominal', 'level1', 'level2', 'level3'
-% dist_preset = 'level_hell';  % 'nominal', 'level1', 'level2', 'level3'
-
-
-
 [params, dist_state] = dist_init(params, dist_preset);
 if params.dist.uncertainty.enable
     params_true = apply_uncertainty(params);
@@ -29,7 +20,7 @@ end
 %% Simulation settings
 sim_hz = 1000;
 dt = 1/sim_hz;
-t_end = 30;
+t_end = 10;
 t = 0:dt:t_end;
 N = length(t);
 
@@ -37,27 +28,6 @@ omega_bar2RPM = 60 / (2 * pi);
 
 %% Process noise covariance
 Q = zeros(9,9);
-
-%% Waypoints [x, y, z] in NED
-% waypoints = [
-%     0,   0,  -10;   % WP1: Hover at start
-%     10,  0,  -10;   % WP2: Forward
-%     10,  10, -10;   % WP3: Right
-%     0,   10, -10;   % WP4: Back
-%     0,   0,  -10;   % WP5: Return
-% ];
-
-waypoints = [
-    0,   0,  -10;   % WP1: Hover at start
-    0,  0,  -10;   % WP2: Forward
-    0,  0, -10;   % WP3: Right
-    0,   0, -10;   % WP4: Back
-    0,   0,  -10;   % WP5: Return
-];
-n_wp = size(waypoints, 1);
-wp_idx = 1;
-wp_threshold = 0.5;  % [m] arrival threshold
-yaw_des = 0;
 
 %% Control gains
 
@@ -73,35 +43,48 @@ gains_att.Ki = [0.1; 0.1; 0.1];
 gains_att.Kd = [2; 2; 1.5];
 gains_att.int_limit = [1; 1; 1];
 
-%% Control state initialization
-ctrl_state.int_pos = zeros(3,1);
-ctrl_state.int_att = zeros(3,1);
-ctrl_state.dt = dt;
+% Altitude PID
+gains_alt.Kp = gains_att.Kp(3);
+gains_alt.Ki = gains_att.Ki(3);
+gains_alt.Kd = gains_att.Kd(3);
+gains_alt.int_limit = gains_att.int_limit(3);
 
-%% Initial state (28x1 for Hexa)
+%% Control state initialization
+ctrl_state.int_att = zeros(3,1);
+ctrl_state.int_alt = 0;
+
+%% Initial state (28x1 for hexa)
 m = params.drone.body.m;
 g = params.env.g;
 k_T = params.drone.motor.k_T;
 n_motor = params.drone.body.n_motor;
 
 omega_hover = sqrt(m * g / (n_motor * k_T));
+fprintf('Hover motor speed: %.2f RPM\n', omega_hover * omega_bar2RPM);
+
+% Initial euler: roll=20, pitch=15, yaw=10 deg
+euler0 = deg2rad([20; 15; 10]);
+q0 = GetQUAT(euler0(3), euler0(2), euler0(1));
+q0 = q0(:);
 
 x0 = zeros(28, 1);
-x0(1:3)   = [0; 0; -0.01];            % position (NED)
+x0(1:3)   = [0; 0; -10];              % position (NED), 10m altitude
 x0(4:6)   = [0; 0; 0];                % velocity (body)
-x0(7:10)  = [1; 0; 0; 0];             % quaternion (level)
+x0(7:10)  = q0;                       % quaternion
 x0(11:13) = [0; 0; 0];                % angular velocity
 x0(14:19) = omega_hover * ones(6,1);  % motor speed (6 motors)
 x0(20:28) = zeros(9, 1);              % biases
 
+%% Desired states
+q_des = [1; 0; 0; 0];   % level attitude
+alt_des = 10;           % maintain 10m altitude
+
 %% Data storage
 X = zeros(28, N);
 U = zeros(6, N);
-POS_DES = zeros(3, N);
 TAU_DIST = zeros(3, N);
 F_DIST = zeros(3, N);
 X(:,1) = x0;
-POS_DES(:,1) = waypoints(1,:)';
 
 %% Simulation loop
 fprintf('Running simulation (dist: %s)...\n', dist_preset);
@@ -114,28 +97,19 @@ for k = 1:N-1
     q = x_k(7:10);
     omega = x_k(11:13);
     
-    % Velocity in NED
+    % Current altitude (positive up)
+    alt = -pos_ned(3);
+    
+    % Vertical velocity
     R_b2n = GetDCM_QUAT(q);
     vel_ned = R_b2n * vel_b;
-    
-    % Current waypoint
-    pos_des = waypoints(wp_idx, :)';
-    
-    % Waypoint arrival check
-    dist_to_wp = norm(pos_ned - pos_des);
-    if dist_to_wp < wp_threshold && wp_idx < n_wp
-        wp_idx = wp_idx + 1;
-        ctrl_state.int_pos = zeros(3,1);
-    end
-    pos_des = waypoints(wp_idx, :)';
-    POS_DES(:,k) = pos_des;
-    
-    % Position control
-    [q_des, thrust_cmd, ctrl_state] = position_pid(...
-        pos_des, pos_ned, vel_ned, yaw_des, ctrl_state, gains_pos, params);
+    vel_z = -vel_ned(3);
     
     % Attitude control
     [tau_cmd, ctrl_state] = attitude_pid(q_des, q, omega, ctrl_state, gains_att, dt);
+    
+    % Altitude control
+    [thrust_cmd, ctrl_state] = altitude_pid(alt_des, alt, vel_z, ctrl_state, gains_alt, dt, params);
     
     % Control allocation
     cmd_vec = [thrust_cmd; tau_cmd];
@@ -167,90 +141,78 @@ for k = 1:N-1
     X(:,k+1) = x_next;
 end
 U(:,end) = U(:,end-1);
-POS_DES(:,end) = POS_DES(:,end-1);
 fprintf('Simulation complete.\n');
 
 %% Plot results
-figure('Position', [100 100 1400 900]);
+figure('Position', [100 100 1200 800]);
 
-% X position
 subplot(3,3,1);
-plot(t, X(1,:), 'b', 'LineWidth', 1.5); hold on;
-plot(t, POS_DES(1,:), 'r--', 'LineWidth', 1.5);
-xlabel('Time [s]'); ylabel('X [m]');
-title('X Position'); grid on;
-legend('Actual', 'Desired');
-
-% Y position
-subplot(3,3,2);
-plot(t, X(2,:), 'b', 'LineWidth', 1.5); hold on;
-plot(t, POS_DES(2,:), 'r--', 'LineWidth', 1.5);
-xlabel('Time [s]'); ylabel('Y [m]');
-title('Y Position'); grid on;
-legend('Actual', 'Desired');
-
-% Z position (altitude)
-subplot(3,3,3);
-plot(t, -X(3,:), 'b', 'LineWidth', 1.5); hold on;
-plot(t, -POS_DES(3,:), 'r--', 'LineWidth', 1.5);
+plot(t, -X(3,:), 'b', 'LineWidth', 1.5);
+hold on;
+yline(alt_des, 'r--', 'LineWidth', 1.5);
 xlabel('Time [s]'); ylabel('Altitude [m]');
 title('Altitude'); grid on;
 legend('Actual', 'Desired');
 
-% Euler angles
-subplot(3,3,4);
+subplot(3,3,2);
 euler = zeros(3,N);
 for k = 1:N
     euler(:,k) = Quat2Euler(X(7:10,k));
 end
 plot(t, rad2deg(euler));
 xlabel('Time [s]'); ylabel('Angle [deg]');
-legend('\phi','\theta','\psi');
+legend('\phi','\theta','\psi'); 
 title('Euler Angles'); grid on;
+yline(0, 'k--');
 
-% Motor speed (actual)
+subplot(3,3,3);
+plot(t, rad2deg(X(11:13,:)));
+xlabel('Time [s]'); ylabel('Angular Rate [deg/s]');
+legend('p','q','r'); 
+title('Angular Velocity (Body)'); grid on;
+
+subplot(3,3,4);
+plot(t, U * omega_bar2RPM);
+xlabel('Time [s]'); ylabel('Motor Speed [RPM]');
+legend('M1','M2','M3','M4','M5','M6');
+title('Motor Commands'); grid on;
+
 subplot(3,3,5);
 plot(t, X(14:19,:) * omega_bar2RPM);
 xlabel('Time [s]'); ylabel('Motor Speed [RPM]');
 legend('M1','M2','M3','M4','M5','M6');
 title('Motor Speed (Actual)'); grid on;
 
-% 3D trajectory
 subplot(3,3,6);
-plot3(X(1,:), X(2,:), -X(3,:), 'b-', 'LineWidth', 1.5); hold on;
-plot3(waypoints(:,1), waypoints(:,2), -waypoints(:,3), 'ro', 'MarkerSize', 10, 'LineWidth', 2);
-plot3(X(1,1), X(2,1), -X(3,1), 'gs', 'MarkerSize', 10, 'LineWidth', 2);
-xlabel('X [m]'); ylabel('Y [m]'); zlabel('Alt [m]');
-title('3D Trajectory'); grid on; axis equal;
-legend('Path', 'Waypoints', 'Start');
-view(45, 30);
+plot(t, X(1:2,:));
+xlabel('Time [s]'); ylabel('Position [m]');
+legend('x','y');
+title('Horizontal Position (NED)'); grid on;
 
-% Torque disturbance
 subplot(3,3,7);
 plot(t, TAU_DIST');
 xlabel('Time [s]'); ylabel('Torque [Nm]');
 legend('\tau_x','\tau_y','\tau_z');
 title('Torque Disturbance'); grid on;
 
-% Wind force
 subplot(3,3,8);
 plot(t, F_DIST');
 xlabel('Time [s]'); ylabel('Force [N]');
 legend('F_x','F_y','F_z');
 title('Wind Force (Body)'); grid on;
 
-% Position error
 subplot(3,3,9);
-pos_err = X(1:3,:) - POS_DES;
-plot(t, vecnorm(pos_err), 'k', 'LineWidth', 1.5);
-xlabel('Time [s]'); ylabel('|Error| [m]');
-title('Position Error'); grid on;
+plot(t, vecnorm(X(1:2,:)), 'b', 'LineWidth', 1.5);
+xlabel('Time [s]'); ylabel('|XY Error| [m]');
+title('Horizontal Drift'); grid on;
 
-sgtitle(sprintf('Hexarotor Position Control (Dist: %s)', dist_preset));
+sgtitle(sprintf('Hexarotor Attitude & Altitude Control (Dist: %s)', dist_preset));
 
-%% Print summary
-fprintf('\n=== Simulation Summary ===\n');
+%% Print final state
+fprintf('\n=== Final State ===\n');
 fprintf('Preset: %s\n', dist_preset);
-fprintf('Final position error: %.3f m\n', norm(X(1:3,end) - POS_DES(:,end)));
-fprintf('Max position error: %.3f m\n', max(vecnorm(pos_err)));
-fprintf('Max attitude: %.2f deg\n', max(abs(rad2deg(euler(:)))));
+fprintf('Altitude: %.2f m (desired: %.2f m)\n', -X(3,end), alt_des);
+fprintf('Roll: %.2f deg\n', rad2deg(euler(1,end)));
+fprintf('Pitch: %.2f deg\n', rad2deg(euler(2,end)));
+fprintf('Yaw: %.2f deg\n', rad2deg(euler(3,end)));
+fprintf('XY drift: %.2f m\n', norm(X(1:2,end)));
