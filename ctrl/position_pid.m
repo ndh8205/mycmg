@@ -1,4 +1,4 @@
-function [q_des, thrust_cmd, ctrl_state] = position_controller(pos_des, pos, vel, yaw_des, ctrl_state, gains, params)
+function [q_des, thrust_cmd, ctrl_state] = position_pid(pos_des, pos, vel, yaw_des, ctrl_state, gains, params)
 % position_controller: Position PID controller with attitude/thrust output
 %
 % Inputs:
@@ -65,7 +65,7 @@ end
 %  Given z_b_des and yaw_des, construct R_b2n_des
 
 % Desired x-axis direction (from yaw)
-x_c = [cos(yaw_des); sin(yaw_des); 0];
+x_c = [ cos(yaw_des); sin(yaw_des); 0 ];
 
 % Desired y-axis: z × x (then normalize)
 y_b_des = cross(z_b_des, x_c);

@@ -27,11 +27,19 @@ if strcmp(drone_type, 'hexa')
     params.drone.body.n_motor = 6;
     
     % Motor
-    params.drone.motor.k_T = 0.03;          % Thrust coeff [N/(rad/s)^2]
-    params.drone.motor.k_M = 0.001/0.03;    % Moment coeff ratio: b/k
-    params.drone.motor.tau_up = 0.0125;     % Time constant (up) [s]
-    params.drone.motor.tau_down = 0.025;    % Time constant (down) [s]
-    params.drone.motor.omega_b_max = 800;   % Max angular velocity [rad/s]
+    % params.drone.motor.k_T = 0.03;          % Thrust coeff [N/(rad/s)^2]
+    % params.drone.motor.k_M = 0.001/0.03;    % Moment coeff ratio: b/k
+    % params.drone.motor.tau_up = 0.0125;     % Time constant (up) [s]
+    % params.drone.motor.tau_down = 0.025;    % Time constant (down) [s]
+    % params.drone.motor.omega_b_max = 800;   % Max angular velocity [rad/s]
+    % params.drone.motor.omega_b_min = 0;     % Min angular velocity [rad/s]
+
+
+    params.drone.motor.k_T = 1.29e-04;          % Thrust coeff [N/(rad/s)^2]
+    params.drone.motor.k_M = 2.33e-05 / params.drone.motor.k_T;    % Moment coeff ratio: b/k
+    params.drone.motor.tau_up = 0.04;
+    params.drone.motor.tau_down = 0.06;
+    params.drone.motor.omega_b_max = 650;   % Max angular velocity [rad/s]
     params.drone.motor.omega_b_min = 0;     % Min angular velocity [rad/s]
     
     % Aerodynamic drag
@@ -90,5 +98,7 @@ params.sensor.mag.noise_density = 0.0004;       % [Gauss/sqrt(Hz)]
 params.sensor.mag.random_walk = 6.4e-06;        % [Gauss/s/sqrt(Hz)]
 params.sensor.mag.bias_corr_time = 600;         % [s]
 params.sensor.mag.rate = 100;                   % [Hz]
+
+
 
 end

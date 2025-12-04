@@ -1,0 +1,1255 @@
+\documentclass{article}
+\usepackage{graphicx}
+\usepackage{kotex}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning}
+
+\geometry{a4paper, margin=2.5cm}
+
+\title{\textbf{Hexarotor Dynamics Simulation}\\[0.5em]\large 모터, 센서 바이어스, 외란 시스템을 포함한 6-DoF 동역학}
+\author{}
+\date{December 2025}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\newpage
+
+%=============================================================================
+\section{기본 표기 규칙}
+%=============================================================================
+
+\subsection{스칼라, 벡터, 행렬}
+\begin{itemize}
+    \item \textbf{스칼라}: 굵지 않은 기호 ($m, \omega, T, k_T$)
+    \item \textbf{벡터}: 굵은 소문자 ($\mathbf{r}, \mathbf{v}, \boldsymbol{\omega}, \boldsymbol{\tau}$)
+    \item \textbf{행렬}: 굵은 대문자 ($\mathbf{R}, \mathbf{J}, \mathbf{B}$)
+\end{itemize}
+
+\subsection{좌표계 정의}
+본 시뮬레이션에서 사용하는 좌표계:
+\begin{itemize}
+    \item $\mathcal{I}$: 관성 좌표계 (Inertial frame) - NED (North-East-Down)
+    \item $\mathcal{B}$: 바디 좌표계 (Body frame) - 헥사로터 중심, X-전방, Y-우측, Z-하방
+\end{itemize}
+
+\textbf{NED 좌표계 특성:}
+\begin{itemize}
+    \item X축: 북쪽 (North) 방향
+    \item Y축: 동쪽 (East) 방향
+    \item Z축: 지면 방향 (Down) - 고도 증가 시 Z 감소
+    \item 중력 벡터: $\mathbf{g}^{\mathcal{I}} = [0, 0, g]^T$ (Z+ 방향)
+\end{itemize}
+
+\subsection{표기 규칙}
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{표기} & \textbf{설명} \\
+\midrule
+$\mathbf{r}^{\mathcal{I}}$ & 프레임 $\mathcal{I}$에서 표현된 위치 벡터 \\
+$\mathbf{v}^{\mathcal{B}}$ & 프레임 $\mathcal{B}$에서 표현된 속도 벡터 \\
+$\boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}}$ & $\mathcal{I}$에 대한 $\mathcal{B}$의 각속도, $\mathcal{B}$에서 표현 \\
+$\mathbf{R}_{\mathcal{B}}^{\mathcal{I}}$ & 바디 → 관성 회전행렬 (DCM) \\
+$\mathbf{q}_{\mathcal{B}}^{\mathcal{I}}$ & 바디 → 관성 쿼터니언 \\
+$[\mathbf{a}]_{\times}$ & 벡터 $\mathbf{a}$의 반대칭 행렬 (skew-symmetric) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{반대칭 행렬 (Skew-Symmetric Matrix)}
+벡터 $\mathbf{a} = [a_1, a_2, a_3]^T$에 대한 반대칭 행렬:
+\begin{equation}
+[\mathbf{a}]_{\times} = \begin{bmatrix} 
+0 & -a_3 & a_2 \\ 
+a_3 & 0 & -a_1 \\ 
+-a_2 & a_1 & 0 
+\end{bmatrix}
+\end{equation}
+
+외적 연산을 행렬 곱셈으로 표현: $\mathbf{a} \times \mathbf{b} = [\mathbf{a}]_{\times}\mathbf{b}$
+
+%=============================================================================
+\section{상태 벡터 정의}
+%=============================================================================
+
+총 28개의 상태 변수로 구성된 상태 벡터:
+\begin{equation}
+\mathbf{X} = \begin{bmatrix}
+\mathbf{r}^{\mathcal{I}} \\
+\mathbf{v}^{\mathcal{B}} \\
+\mathbf{q}_{\mathcal{B}}^{\mathcal{I}} \\
+\boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} \\
+\boldsymbol{\omega}_m \\
+\mathbf{b}_g \\
+\mathbf{b}_a \\
+\mathbf{b}_m
+\end{bmatrix} = \begin{bmatrix}
+\text{위치 (3)} \\
+\text{바디 속도 (3)} \\
+\text{자세 쿼터니언 (4)} \\
+\text{바디 각속도 (3)} \\
+\text{모터 각속도 (6)} \\
+\text{자이로 바이어스 (3)} \\
+\text{가속도계 바이어스 (3)} \\
+\text{지자기 바이어스 (3)}
+\end{bmatrix} \in \mathbb{R}^{28}
+\end{equation}
+
+\subsection{상태 변수 상세 설명}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{clll}
+\toprule
+\textbf{인덱스} & \textbf{변수} & \textbf{설명} & \textbf{단위} \\
+\midrule
+1-3 & $\mathbf{r}^{\mathcal{I}} = [x, y, z]^T$ & NED 좌표계 위치 & [m] \\
+4-6 & $\mathbf{v}^{\mathcal{B}} = [u, v, w]^T$ & 바디 좌표계 속도 & [m/s] \\
+7-10 & $\mathbf{q}_{\mathcal{B}}^{\mathcal{I}} = [q_w, q_x, q_y, q_z]^T$ & 자세 쿼터니언 (Hamilton) & [-] \\
+11-13 & $\boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} = [p, q, r]^T$ & 바디 각속도 & [rad/s] \\
+14-19 & $\boldsymbol{\omega}_m = [\omega_1, ..., \omega_6]^T$ & 모터 회전 속도 & [rad/s] \\
+20-22 & $\mathbf{b}_g = [b_{gx}, b_{gy}, b_{gz}]^T$ & 자이로 바이어스 & [rad/s] \\
+23-25 & $\mathbf{b}_a = [b_{ax}, b_{ay}, b_{az}]^T$ & 가속도계 바이어스 & [m/s$^2$] \\
+26-28 & $\mathbf{b}_m = [b_{mx}, b_{my}, b_{mz}]^T$ & 지자기계 바이어스 & [Gauss] \\
+\bottomrule
+\end{tabular}
+\caption{28-상태 벡터 구성}
+\end{table}
+
+\subsection{쿼터니언 표현 (Hamilton Convention)}
+본 시뮬레이션에서는 Hamilton convention을 사용하며, scalar-first 형식:
+\begin{equation}
+\mathbf{q} = [q_w, q_x, q_y, q_z]^T = [q_w, \mathbf{q}_v^T]^T, \quad \|\mathbf{q}\| = 1
+\end{equation}
+
+쿼터니언과 회전행렬의 관계:
+\begin{equation}
+\mathbf{R}_{\mathcal{B}}^{\mathcal{I}} = \boldsymbol{\Psi}(\mathbf{q})^T \boldsymbol{\Xi}(\mathbf{q})
+\end{equation}
+
+여기서 보조 행렬:
+\begin{equation}
+\boldsymbol{\Xi}(\mathbf{q}) = \begin{bmatrix}
+-\mathbf{q}_v^T \\
+q_w\mathbf{I}_3 + [\mathbf{q}_v]_{\times}
+\end{bmatrix}, \quad
+\boldsymbol{\Psi}(\mathbf{q}) = \begin{bmatrix}
+-\mathbf{q}_v^T \\
+q_w\mathbf{I}_3 - [\mathbf{q}_v]_{\times}
+\end{bmatrix}
+\end{equation}
+
+%=============================================================================
+\section{입력 벡터}
+%=============================================================================
+
+제어 입력은 6개 모터에 대한 각속도 명령:
+\begin{equation}
+\mathbf{U} = [u_1, u_2, u_3, u_4, u_5, u_6]^T \in \mathbb{R}^6
+\end{equation}
+
+여기서 $u_i$는 $i$번째 모터의 명령 각속도 [rad/s]
+
+\textbf{명령 제한:}
+\begin{equation}
+\omega_{min} \leq u_i \leq \omega_{max}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{파라미터} & \textbf{값} & \textbf{설명} \\
+\midrule
+$\omega_{min}$ & 0 rad/s & 최소 모터 각속도 \\
+$\omega_{max}$ & 650 rad/s & 최대 모터 각속도 \\
+\bottomrule
+\end{tabular}
+\caption{모터 명령 제한}
+\end{table}
+
+%=============================================================================
+\section{모터 동역학}
+%=============================================================================
+
+\subsection{비대칭 1차 시스템 모델}
+각 모터는 가속/감속 시 서로 다른 시상수를 갖는 1차 시스템으로 모델링:
+\begin{equation}
+\dot{\omega}_i = \frac{1}{\tau_i}(u_i - \omega_i), \quad i = 1, ..., 6
+\end{equation}
+
+여기서 시상수 $\tau_i$는 동작 모드에 따라 결정:
+\begin{equation}
+\tau_i = \begin{cases}
+\tau_{up} & \text{if } u_i \geq \omega_i \quad \text{(가속)} \\
+\tau_{down} & \text{if } u_i < \omega_i \quad \text{(감속)}
+\end{cases}
+\end{equation}
+
+\textbf{물리적 의미:}
+\begin{itemize}
+    \item $\tau_{up}$: 모터 가속 시상수 - 전기적 응답 특성
+    \item $\tau_{down}$: 모터 감속 시상수 - 관성 및 공기역학적 제동
+    \item 일반적으로 $\tau_{down} > \tau_{up}$ (감속이 더 느림)
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{파라미터} & \textbf{값} & \textbf{설명} \\
+\midrule
+$\tau_{up}$ & 0.04 s & 가속 시상수 \\
+$\tau_{down}$ & 0.06 s & 감속 시상수 \\
+\bottomrule
+\end{tabular}
+\caption{모터 시상수 파라미터}
+\end{table}
+
+\subsection{추력 및 토크 매핑}
+각 모터의 추력:
+\begin{equation}
+T_i = k_T \omega_i^2
+\end{equation}
+
+각 모터의 반토크 (drag torque):
+\begin{equation}
+Q_i = k_M T_i = k_M k_T \omega_i^2 = b \omega_i^2
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $k_T$: 추력 계수 [N/(rad/s)$^2$]
+    \item $k_M$: 모멘트 계수 비율 [m] - $Q = k_M \cdot T$
+    \item $b = k_M k_T$: 토크 계수 [N$\cdot$m/(rad/s)$^2$]
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{파라미터} & \textbf{값} & \textbf{설명} \\
+\midrule
+$k_T$ & $1.29 \times 10^{-4}$ N/(rad/s)$^2$ & 추력 계수 \\
+$k_M$ & 0.181 m & 모멘트 계수 비율 \\
+$b$ & $2.33 \times 10^{-5}$ N$\cdot$m/(rad/s)$^2$ & 토크 계수 \\
+\bottomrule
+\end{tabular}
+\caption{추력/토크 매핑 파라미터}
+\end{table}
+
+%=============================================================================
+\section{헥사로터 배치 및 제어 할당}
+%=============================================================================
+
+\subsection{모터 배치}
+6개 모터가 정육각형 배치로 암(arm)에 장착:
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=1.5]
+    % Axes
+    \draw[->, thick] (0,0) -- (2.5,0) node[right] {$Y^{\mathcal{B}}$ (Right)};
+    \draw[->, thick] (0,0) -- (0,2.5) node[above] {$X^{\mathcal{B}}$ (Front)};
+    
+    % Body circle
+    \draw[dashed] (0,0) circle (0.3);
+    
+    % Motor positions
+    \def\L{1.8}
+    
+    % M1: 30° (CCW) - 전방 우측
+    \draw[thick] (0,0) -- (60:\L);
+    \filldraw[blue] (60:\L) circle (0.12) node[above right] {M1 (CCW)};
+    
+    % M2: 330° (CW) - 전방 좌측
+    \draw[thick] (0,0) -- (120:\L);
+    \filldraw[red] (120:\L) circle (0.12) node[above left] {M2 (CW)};
+    
+    % M3: 270° (CCW) - 좌측
+    \draw[thick] (0,0) -- (180:\L);
+    \filldraw[blue] (180:\L) circle (0.12);
+    \node[blue, anchor=east, yshift=-5mm, xshift=0mm] at (180:\L) {M3 (CCW)};
+    
+    % M4: 210° (CW) - 후방 좌측
+    \draw[thick] (0,0) -- (240:\L);
+    \filldraw[red] (240:\L) circle (0.12) node[below left] {M4 (CW)};
+    
+    % M5: 150° (CCW) - 후방 우측
+    \draw[thick] (0,0) -- (300:\L);
+    \filldraw[blue] (300:\L) circle (0.12) node[below right] {M5 (CCW)};
+    
+    % M6: 90° (CW) - 우측
+    \filldraw[red] (0:\L) circle (0.12);
+    \node[red, anchor=west, yshift=-5mm, xshift=0mm] at (0:\L) {M6 (CW)};
+    
+    % Center
+    \filldraw (0,0) circle (0.05);
+    
+    % Legend
+    \node[blue] at (3, 1.5) {CCW: 반시계};
+    \node[red] at (3, 1.0) {CW: 시계};
+\end{tikzpicture}
+\caption{헥사로터 모터 배치 (상단에서 본 모습, Z+ 방향)}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ccccccc}
+\toprule
+\textbf{모터} & \textbf{각도} & \textbf{$x_i$} & \textbf{$y_i$} & \textbf{회전방향} & \textbf{Yaw 기여} \\
+\midrule
+M1 & $30°$ & $L\sqrt{3}/2$ & $L/2$ & CCW & $+b$ \\
+M2 & $330°$ & $L\sqrt{3}/2$ & $-L/2$ & CW & $-b$ \\
+M3 & $270°$ & $0$ & $-L$ & CCW & $+b$ \\
+M4 & $210°$ & $-L\sqrt{3}/2$ & $-L/2$ & CW & $-b$ \\
+M5 & $150°$ & $-L\sqrt{3}/2$ & $L/2$ & CCW & $+b$ \\
+M6 & $90°$ & $0$ & $L$ & CW & $-b$ \\
+\bottomrule
+\end{tabular}
+\caption{모터 위치 및 회전 방향 ($L$ = 0.96 m)}
+\end{table}
+
+\subsection{토크 방정식 (NED 좌표계)}
+각 축에 대한 토크 생성:
+
+\textbf{Roll 토크 ($\tau_x$):}
+\begin{equation}
+\tau_x = \sum_{i=1}^{6} (-y_i) \cdot k_T \omega_i^2
+\end{equation}
+
+\textbf{Pitch 토크 ($\tau_y$):}
+\begin{equation}
+\tau_y = \sum_{i=1}^{6} (+x_i) \cdot k_T \omega_i^2
+\end{equation}
+
+\textbf{Yaw 토크 ($\tau_z$):}
+\begin{equation}
+\tau_z = \sum_{i=1}^{6} (\pm b) \omega_i^2 \quad \text{(CCW: $+b$, CW: $-b$)}
+\end{equation}
+
+\subsection{제어 할당 행렬}
+제어 명령과 모터 각속도 제곱의 관계:
+\begin{equation}
+\begin{bmatrix} T \\ \tau_x \\ \tau_y \\ \tau_z \end{bmatrix} = \mathbf{B} \begin{bmatrix} \omega_1^2 \\ \omega_2^2 \\ \omega_3^2 \\ \omega_4^2 \\ \omega_5^2 \\ \omega_6^2 \end{bmatrix}
+\end{equation}
+
+할당 행렬 $\mathbf{B} \in \mathbb{R}^{4 \times 6}$:
+\begin{equation}
+\mathbf{B} = \begin{bmatrix}
+k_T & k_T & k_T & k_T & k_T & k_T \\
+-k_T \frac{L}{2} & k_T \frac{L}{2} & k_T L & k_T \frac{L}{2} & -k_T \frac{L}{2} & -k_T L \\
+k_T L\frac{\sqrt{3}}{2} & k_T L\frac{\sqrt{3}}{2} & 0 & -k_T L\frac{\sqrt{3}}{2} & -k_T L\frac{\sqrt{3}}{2} & 0 \\
+b & -b & b & -b &  b & -b
+\end{bmatrix}
+\end{equation}
+
+\subsection{역할당 (Inverse Allocation)}
+제어 명령에서 모터 각속도 제곱을 계산:
+\begin{equation}
+\boldsymbol{\omega}_{sq} = \mathbf{B}^{\dagger} \begin{bmatrix} T_{cmd} \\ \tau_{x,cmd} \\ \tau_{y,cmd} \\ \tau_{z,cmd} \end{bmatrix}
+\end{equation}
+
+여기서 $\mathbf{B}^{\dagger}$는 $\mathbf{B}$의 Moore-Penrose 의사역행렬:
+\begin{equation}
+\mathbf{B}^{\dagger} = \mathbf{B}^T(\mathbf{B}\mathbf{B}^T)^{-1}
+\end{equation}
+
+모터 각속도:
+\begin{equation}
+\omega_i = \sqrt{\max(\omega_{sq,i}, 0)}, \quad i = 1, ..., 6
+\end{equation}
+
+%=============================================================================
+\section{병진 운동 동역학}
+%=============================================================================
+
+\subsection{위치 미분}
+관성 좌표계에서의 위치 변화율:
+\begin{equation}
+\dot{\mathbf{r}}^{\mathcal{I}} = \mathbf{R}_{\mathcal{B}}^{\mathcal{I}} \mathbf{v}^{\mathcal{B}}
+\end{equation}
+
+\subsection{속도 미분 (바디 프레임)}
+뉴턴 제2법칙을 바디 프레임에서 표현:
+\begin{equation}
+\dot{\mathbf{v}}^{\mathcal{B}} = \frac{1}{m}\mathbf{F}_{total}^{\mathcal{B}} + \mathbf{g}^{\mathcal{B}} - \boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} \times \mathbf{v}^{\mathcal{B}}
+\end{equation}
+
+\subsection{힘 구성 요소}
+
+\subsubsection{추력 (Body Frame)}
+\begin{equation}
+\mathbf{F}_{thrust}^{\mathcal{B}} = \begin{bmatrix} 0 \\ 0 \\ -T \end{bmatrix} = \begin{bmatrix} 0 \\ 0 \\ -\sum_{i=1}^{6} k_T \omega_i^2 \end{bmatrix}
+\end{equation}
+
+\textbf{참고:} NED 좌표계에서 Z+는 하방이므로, 상향 추력은 음수
+
+\subsubsection{중력 (Body Frame)}
+\begin{equation}
+\mathbf{g}^{\mathcal{B}} = (\mathbf{R}_{\mathcal{B}}^{\mathcal{I}})^T \mathbf{g}^{\mathcal{I}} = \mathbf{R}_{\mathcal{I}}^{\mathcal{B}} \begin{bmatrix} 0 \\ 0 \\ g \end{bmatrix}
+\end{equation}
+
+\subsubsection{외란력 (Body Frame)}
+외란 시스템에서 생성되는 힘:
+\begin{equation}
+\mathbf{F}_{dist}^{\mathcal{B}} = \mathbf{F}_{wind}^{\mathcal{B}}
+\end{equation}
+
+\subsubsection{총 힘}
+\begin{equation}
+\mathbf{F}_{total}^{\mathcal{B}} = \mathbf{F}_{thrust}^{\mathcal{B}} + \mathbf{F}_{dist}^{\mathcal{B}}
+\end{equation}
+
+%=============================================================================
+\section{회전 운동 동역학}
+%=============================================================================
+
+\subsection{자세 미분 (쿼터니언)}
+Hamilton convention을 사용한 쿼터니언 미분:
+\begin{equation}
+\dot{\mathbf{q}}_{\mathcal{B}}^{\mathcal{I}} = \frac{1}{2} \boldsymbol{\Omega}(\boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}}) \mathbf{q}_{\mathcal{B}}^{\mathcal{I}}
+\end{equation}
+
+여기서 $\boldsymbol{\Omega}$ 행렬:
+\begin{equation}
+\boldsymbol{\Omega}(\boldsymbol{\omega}) = \begin{bmatrix}
+0 & -\omega_x & -\omega_y & -\omega_z \\
+\omega_x & 0 & \omega_z & -\omega_y \\
+\omega_y & -\omega_z & 0 & \omega_x \\
+\omega_z & \omega_y & -\omega_x & 0
+\end{bmatrix}
+\end{equation}
+
+\subsection{쿼터니언 정규화}
+적분 후 단위 쿼터니언 조건 유지:
+\begin{equation}
+\mathbf{q} \leftarrow \frac{\mathbf{q}}{\|\mathbf{q}\|}
+\end{equation}
+
+\subsection{쿼터니언 연속성 보장}
+$\mathbf{q}$와 $-\mathbf{q}$는 동일한 회전을 나타냄. 최단 경로 선택:
+\begin{equation}
+\text{if } \mathbf{q}_k^T \mathbf{q}_{k-1} < 0, \quad \text{then } \mathbf{q}_k \leftarrow -\mathbf{q}_k
+\end{equation}
+
+\subsection{각속도 미분 (오일러 방정식)}
+\begin{equation}
+\mathbf{J} \dot{\boldsymbol{\omega}}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} = \mathbf{M}_{total}^{\mathcal{B}} - \boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} \times (\mathbf{J} \boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}})
+\end{equation}
+
+풀이:
+\begin{equation}
+\dot{\boldsymbol{\omega}}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} = \mathbf{J}^{-1} \left( \mathbf{M}_{total}^{\mathcal{B}} - [\boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}}]_{\times} \mathbf{J} \boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} \right)
+\end{equation}
+
+\subsection{모멘트 구성 요소}
+
+\subsubsection{제어 모멘트}
+제어 할당에서 계산된 토크:
+\begin{equation}
+\mathbf{M}_{ctrl}^{\mathcal{B}} = \begin{bmatrix} \tau_x \\ \tau_y \\ \tau_z \end{bmatrix}
+\end{equation}
+
+\subsubsection{외란 모멘트}
+외란 시스템에서 생성:
+\begin{equation}
+\mathbf{M}_{dist}^{\mathcal{B}} = \boldsymbol{\tau}_{dist}
+\end{equation}
+
+\subsubsection{총 모멘트}
+\begin{equation}
+\mathbf{M}_{total}^{\mathcal{B}} = \mathbf{M}_{ctrl}^{\mathcal{B}} + \mathbf{M}_{dist}^{\mathcal{B}}
+\end{equation}
+
+\subsection{관성 텐서}
+대각 관성 텐서 (주축 정렬 가정):
+\begin{equation}
+\mathbf{J} = \begin{bmatrix}
+J_{xx} & 0 & 0 \\
+0 & J_{yy} & 0 \\
+0 & 0 & J_{zz}
+\end{bmatrix} = \begin{bmatrix}
+0.17 & 0 & 0 \\
+0 & 0.175 & 0 \\
+0 & 0 & 0.263
+\end{bmatrix} \text{ kg}\cdot\text{m}^2
+\end{equation}
+
+%=============================================================================
+\section{센서 바이어스 동역학}
+%=============================================================================
+
+\subsection{자이로스코프 바이어스 (Random Walk)}
+\begin{equation}
+\dot{\mathbf{b}}_g = \mathbf{w}_g
+\end{equation}
+
+여기서 $\mathbf{w}_g \sim \mathcal{N}(\mathbf{0}, \sigma_{g,rw}^2 \mathbf{I}_3)$는 백색 가우시안 노이즈
+
+\textbf{특성:}
+\begin{itemize}
+    \item Random walk 모델 - 바이어스가 시간에 따라 드리프트
+    \item ARW (Angular Random Walk): 0.0003394 rad/s/$\sqrt{\text{Hz}}$
+    \item 바이어스 random walk: $3.8785 \times 10^{-5}$ rad/s$^2$/$\sqrt{\text{Hz}}$
+\end{itemize}
+
+\subsection{가속도계 바이어스 (Random Walk)}
+\begin{equation}
+\dot{\mathbf{b}}_a = \mathbf{w}_a
+\end{equation}
+
+여기서 $\mathbf{w}_a \sim \mathcal{N}(\mathbf{0}, \sigma_{a,rw}^2 \mathbf{I}_3)$
+
+\textbf{특성:}
+\begin{itemize}
+    \item VRW (Velocity Random Walk): 0.004 m/s$^2$/$\sqrt{\text{Hz}}$
+    \item 바이어스 random walk: $6.0 \times 10^{-3}$ m/s$^3$/$\sqrt{\text{Hz}}$
+\end{itemize}
+
+\subsection{지자기계 바이어스 (FOGM)}
+First-Order Gauss-Markov 프로세스:
+\begin{equation}
+\dot{\mathbf{b}}_m = -\frac{1}{\tau_m} \mathbf{b}_m + \mathbf{w}_m
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $\tau_m = 600$ s: 상관 시간
+    \item $\mathbf{w}_m \sim \mathcal{N}(\mathbf{0}, \sigma_{m,rw}^2 \mathbf{I}_3)$
+    \item 노이즈 밀도: 0.0004 Gauss/$\sqrt{\text{Hz}}$
+    \item Random walk: $6.4 \times 10^{-6}$ Gauss/s/$\sqrt{\text{Hz}}$
+\end{itemize}
+
+\textbf{FOGM 특성:}
+\begin{itemize}
+    \item Random walk과 달리 평균 회귀 특성
+    \item 정상 상태 분산: $\sigma_{ss}^2 = \frac{\sigma_{m,rw}^2 \tau_m}{2}$
+\end{itemize}
+
+%=============================================================================
+\section{외란 시스템}
+%=============================================================================
+
+\subsection{개요}
+외란 시스템은 세 가지 주요 구성요소로 구성:
+\begin{enumerate}
+    \item \textbf{토크 외란}: 외부 모멘트 교란
+    \item \textbf{바람 외란}: 공기역학적 힘 교란
+    \item \textbf{파라미터 불확실성}: 모델 오차
+\end{enumerate}
+
+\subsection{외란 프리셋}
+\begin{table}[H]
+\centering
+\begin{tabular}{lllll}
+\toprule
+\textbf{프리셋} & \textbf{토크} & \textbf{바람} & \textbf{불확실성} \\
+\midrule
+nominal & 비활성 & 비활성 & 비활성 \\
+level1 & random\_sine & constant & 비활성 \\
+level2 & combined & gust & 비활성 \\
+level3 & combined & dryden & 활성 (10\%) \\
+paper & paper & 비활성 & 비활성 \\
+\bottomrule
+\end{tabular}
+\caption{외란 프리셋 구성}
+\end{table}
+
+%-----------------------------------------------------------------------------
+\subsection{토크 외란}
+%-----------------------------------------------------------------------------
+
+\subsubsection{Sine 외란}
+단일 주파수 정현파:
+\begin{equation}
+\boldsymbol{\tau}_{dist}(t) = \mathbf{A} \odot \sin(2\pi f t)
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $\mathbf{A} = [A_x, A_y, A_z]^T$: 진폭 벡터 [N$\cdot$m]
+    \item $f$: 주파수 [Hz]
+    \item $\odot$: 요소별 곱셈
+\end{itemize}
+
+\subsubsection{Random Sine 외란}
+다중 고조파의 합:
+\begin{equation}
+\tau_{dist,i}(t) = A_i \sum_{j=1}^{5} \frac{1}{j} \sin(2\pi f_{ij} t + \phi_{ij}), \quad i \in \{x, y, z\}
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $f_{ij} = f_{base} \cdot \alpha_{ij} \cdot j$: $j$번째 고조파 주파수
+    \item $\alpha_{ij} \in [0.5, 1.5]$: 랜덤 주파수 배수
+    \item $\phi_{ij} \in [0, 2\pi]$: 랜덤 위상
+\end{itemize}
+
+정규화:
+\begin{equation}
+\boldsymbol{\tau}_{dist}(t) = \frac{\mathbf{A}}{3} \odot \boldsymbol{\tau}_{raw}(t)
+\end{equation}
+
+\subsubsection{Step 외란}
+계단 함수:
+\begin{equation}
+\boldsymbol{\tau}_{dist}(t) = \begin{cases}
+\mathbf{A} & \text{if } t_{step} \leq t < t_{step} + t_{dur} \\
+\mathbf{0} & \text{otherwise}
+\end{cases}
+\end{equation}
+
+\subsubsection{Impulse 외란}
+짧은 충격:
+\begin{equation}
+\boldsymbol{\tau}_{dist}(t) = \begin{cases}
+\mathbf{A} & \text{if } t_{imp} \leq t < t_{imp} + \Delta t_{imp} \\
+\mathbf{0} & \text{otherwise}
+\end{cases}
+\end{equation}
+
+여기서 $\Delta t_{imp} = 0.1$ s (충격 지속시간)
+
+\subsubsection{Combined 외란}
+Random sine + Step의 조합:
+\begin{equation}
+\boldsymbol{\tau}_{dist}(t) = \boldsymbol{\tau}_{random\_sine}(t) + 0.5 \cdot \boldsymbol{\tau}_{step}(t)
+\end{equation}
+
+\subsubsection{Paper 외란 (적분 랜덤 정현파)}
+논문 스타일의 드리프트 외란:
+
+\textbf{가속도 계산:}
+\begin{equation}
+\ddot{\tau}_i(t) = A_{accel,i} \sum_{j=1}^{N_h} a_{ij} \sin(2\pi f_{ij} t + \phi_{ij})
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $N_h = 10$: 고조파 개수
+    \item $f_{ij} \in [0.1, 2.1]$ Hz: 랜덤 주파수
+    \item $\phi_{ij} \in [0, 2\pi]$: 랜덤 위상
+    \item $a_{ij}$: 정규화된 진폭 ($\sum_j a_{ij} = 1$)
+\end{itemize}
+
+\textbf{적분 (오일러):}
+\begin{equation}
+\boldsymbol{\tau}_{integral}(t+\Delta t) = \boldsymbol{\tau}_{integral}(t) + 2 \Delta t \cdot \ddot{\boldsymbol{\tau}}(t)
+\end{equation}
+
+\textbf{스케일링 및 제한:}
+\begin{equation}
+\tau_{dist,i}(t) = \text{clamp}\left(\frac{\tau_{integral,i}(t)}{s}, -\tau_{max}, \tau_{max}\right)
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $s = 5$: 스케일 인자
+    \item $\tau_{max} = 0.02$ N$\cdot$m: 최대 토크 제한
+\end{itemize}
+
+%-----------------------------------------------------------------------------
+\subsection{바람 외란}
+%-----------------------------------------------------------------------------
+
+\subsubsection{공기역학 모델}
+바람에 의한 항력:
+\begin{equation}
+\mathbf{F}_{wind}^{\mathcal{B}} = -\frac{1}{2} \rho C_d A \|\mathbf{V}_{air}\| \mathbf{V}_{air}
+\end{equation}
+
+상대 공기속도:
+\begin{equation}
+\mathbf{V}_{air} = \mathbf{v}^{\mathcal{B}} - \mathbf{V}_{wind}^{\mathcal{B}}
+\end{equation}
+
+바람 속도 변환:
+\begin{equation}
+\mathbf{V}_{wind}^{\mathcal{B}} = \mathbf{R}_{\mathcal{I}}^{\mathcal{B}} \mathbf{V}_{wind}^{\mathcal{I}}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{파라미터} & \textbf{값} & \textbf{설명} \\
+\midrule
+$\rho$ & 1.225 kg/m$^3$ & 공기 밀도 \\
+$C_d$ & 1.0 & 항력 계수 \\
+$A$ & 0.1 m$^2$ & 기준 면적 \\
+\bottomrule
+\end{tabular}
+\caption{공기역학 파라미터}
+\end{table}
+
+\subsubsection{Constant Wind}
+일정한 바람:
+\begin{equation}
+\mathbf{V}_{wind}^{\mathcal{I}}(t) = \mathbf{V}_{const} = \text{const.}
+\end{equation}
+
+기본값: $\mathbf{V}_{const} = [2, 1, 0]^T$ m/s
+
+\subsubsection{Gust Wind (1-Cosine Profile)}
+돌풍 모델:
+\begin{equation}
+\mathbf{V}_{wind}^{\mathcal{I}}(t) = \mathbf{V}_{base} + \mathbf{V}_{gust}(t)
+\end{equation}
+
+돌풍 프로파일:
+\begin{equation}
+\mathbf{V}_{gust}(t) = \begin{cases}
+V_{gust} \cdot \frac{1}{2}\left(1 - \cos\left(\frac{2\pi(t-t_s)}{t_d}\right)\right) \cdot \hat{\mathbf{d}} & t_s \leq t < t_s + t_d \\
+\mathbf{0} & \text{otherwise}
+\end{cases}
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $V_{gust}$: 돌풍 크기 [m/s]
+    \item $t_s$: 돌풍 시작 시간 [s]
+    \item $t_d$: 돌풍 지속시간 [s]
+    \item $\hat{\mathbf{d}}$: 돌풍 방향 (랜덤, 수평면에서)
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.8]
+    \draw[->] (0,0) -- (8,0) node[right] {$t$};
+    \draw[->] (0,0) -- (0,3) node[above] {$|\mathbf{V}_{gust}|$};
+    
+    % 1-cosine profile
+    \draw[thick, blue, domain=2:6, samples=100] plot (\x, {2*(1-cos((\x-2)*90/2))});
+    
+    % Labels
+    \draw[dashed] (2,0) -- (2,2);
+    \draw[dashed] (6,0) -- (6,2);
+    \node[below] at (2,0) {$t_s$};
+    \node[below] at (6,0) {$t_s+t_d$};
+    \node[left] at (0,2) {$V_{gust}$};
+\end{tikzpicture}
+\caption{1-Cosine 돌풍 프로파일}
+\end{figure}
+
+\subsubsection{Dryden Turbulence Model}
+연속적인 난류를 상태공간 모델로 표현:
+
+\textbf{상태공간 표현:}
+\begin{equation}
+\dot{\mathbf{x}}_{dry} = \mathbf{A}_{dry} \mathbf{x}_{dry} + \mathbf{B}_{dry} w(t)
+\end{equation}
+\begin{equation}
+\mathbf{V}_{turb}^{\mathcal{I}} = \mathbf{C}_{dry} \mathbf{x}_{dry}
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $\mathbf{x}_{dry} \in \mathbb{R}^6$: 필터 상태 (각 축 2개)
+    \item $w(t)$: 백색 가우시안 노이즈
+\end{itemize}
+
+\textbf{시상수 및 난류 강도:}
+\begin{equation}
+\tau_u = \frac{L_u}{V}, \quad \tau_v = \frac{L_v}{V}, \quad \tau_w = \frac{L_w}{V}
+\end{equation}
+
+스케일 길이 (저고도 근사):
+\begin{equation}
+L_u = L_v = \frac{h}{(0.177 + 0.000823h)^{1.2}}, \quad L_w = h
+\end{equation}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{강도} & $\sigma_u$ [m/s] & $\sigma_v$ [m/s] & $\sigma_w$ [m/s] \\
+\midrule
+light & 1.5 & 1.5 & 1.0 \\
+moderate & 3.0 & 3.0 & 2.0 \\
+severe & 6.0 & 6.0 & 4.0 \\
+\bottomrule
+\end{tabular}
+\caption{Dryden 난류 강도 분류}
+\end{table}
+
+\textbf{상태공간 행렬:}
+\begin{equation}
+\mathbf{A}_{dry} = \text{diag}\left(-\frac{1}{\tau_u}, -\frac{1}{\tau_u}, -\frac{1}{\tau_v}, -\frac{1}{\tau_v}, -\frac{1}{\tau_w}, -\frac{1}{\tau_w}\right)
+\end{equation}
+
+\begin{equation}
+\mathbf{B}_{dry} = \begin{bmatrix} \sqrt{2/\tau_u}\sigma_u \\ 0 \\ \sqrt{2/\tau_v}\sigma_v \\ 0 \\ \sqrt{2/\tau_w}\sigma_w \\ 0 \end{bmatrix}
+\end{equation}
+
+\begin{equation}
+\mathbf{C}_{dry} = \begin{bmatrix}
+1 & 0 & 0 & 0 & 0 & 0 \\
+0 & 0 & 1 & 0 & 0 & 0 \\
+0 & 0 & 0 & 0 & 1 & 0
+\end{bmatrix}
+\end{equation}
+
+총 바람 속도:
+\begin{equation}
+\mathbf{V}_{wind}^{\mathcal{I}}(t) = \mathbf{V}_{base} + \mathbf{V}_{turb}^{\mathcal{I}}(t)
+\end{equation}
+
+%-----------------------------------------------------------------------------
+\subsection{파라미터 불확실성}
+%-----------------------------------------------------------------------------
+
+시뮬레이션의 "실제" 파라미터에 불확실성 적용:
+
+\subsubsection{질량 불확실성}
+\begin{equation}
+m_{true} = m_{nom} \cdot (1 + \delta_m \cdot \xi_m), \quad \xi_m \sim \mathcal{U}(-1, 1)
+\end{equation}
+
+\subsubsection{관성 불확실성}
+각 대각 성분에 독립적 적용:
+\begin{equation}
+J_{ii,true} = J_{ii,nom} \cdot (1 + \delta_J \cdot \xi_{J,i}), \quad i \in \{xx, yy, zz\}
+\end{equation}
+
+\subsubsection{추력 계수 불확실성}
+\begin{equation}
+k_{T,true} = k_{T,nom} \cdot (1 + \delta_{k_T} \cdot \xi_{k_T})
+\end{equation}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{파라미터} & \textbf{불확실성 ($\delta$)} & \textbf{Level 3 값} \\
+\midrule
+질량 ($m$) & $\pm \delta_m$ & $\pm 10\%$ \\
+관성 ($\mathbf{J}$) & $\pm \delta_J$ & $\pm 10\%$ \\
+추력 계수 ($k_T$) & $\pm \delta_{k_T}$ & $\pm 5\%$ \\
+\bottomrule
+\end{tabular}
+\caption{파라미터 불확실성 설정}
+\end{table}
+
+\textbf{사용 패턴:}
+\begin{itemize}
+    \item 제어기: 공칭 파라미터 ($m_{nom}, \mathbf{J}_{nom}, k_{T,nom}$) 사용
+    \item 동역학: 실제 파라미터 ($m_{true}, \mathbf{J}_{true}, k_{T,true}$) 사용
+    \item 이를 통해 모델 불일치 상황 시뮬레이션
+\end{itemize}
+
+%=============================================================================
+\section{센서 측정 모델}
+%=============================================================================
+
+\subsection{IMU 자이로스코프}
+\begin{equation}
+\boldsymbol{\omega}_{meas} = \boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} + \mathbf{b}_g + \mathbf{n}_g
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $\mathbf{n}_g \sim \mathcal{N}(\mathbf{0}, \sigma_{g,n}^2 \mathbf{I}_3)$: 측정 노이즈
+    \item $\sigma_{g,n} = \sigma_{ARW} \cdot \sqrt{f_s}$: 노이즈 표준편차
+    \item $f_s = 200$ Hz: 샘플링 주파수
+\end{itemize}
+
+\subsection{IMU 가속도계}
+\begin{equation}
+\mathbf{a}_{meas} = \frac{\mathbf{F}_{total}^{\mathcal{B}}}{m} - \mathbf{g}^{\mathcal{B}} + \mathbf{b}_a + \mathbf{n}_a
+\end{equation}
+
+Specific force 측정 (중력 반대 방향 측정):
+\begin{equation}
+\mathbf{f}_{meas} = \mathbf{R}_{\mathcal{I}}^{\mathcal{B}} (\ddot{\mathbf{r}}^{\mathcal{I}} - \mathbf{g}^{\mathcal{I}}) + \mathbf{b}_a + \mathbf{n}_a
+\end{equation}
+
+\subsection{GPS}
+위치 측정:
+\begin{equation}
+\mathbf{r}_{GPS} = \mathbf{r}^{\mathcal{I}} + \mathbf{n}_{pos}
+\end{equation}
+
+속도 측정:
+\begin{equation}
+\mathbf{v}_{GPS} = \mathbf{R}_{\mathcal{B}}^{\mathcal{I}} \mathbf{v}^{\mathcal{B}} + \mathbf{n}_{vel}
+\end{equation}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{측정} & \textbf{노이즈 표준편차} & \textbf{샘플링} \\
+\midrule
+위치 & $[0.3, 0.3, 0.5]$ m & 5 Hz \\
+속도 & $[0.05, 0.05, 0.1]$ m/s & 5 Hz \\
+\bottomrule
+\end{tabular}
+\caption{GPS 측정 파라미터}
+\end{table}
+
+\subsection{기압계 (Barometer)}
+고도 측정:
+\begin{equation}
+h_{baro} = -z + n_{baro}
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $z$: NED Z 좌표 (음수가 상방)
+    \item $n_{baro} \sim \mathcal{N}(0, 0.5^2)$ m
+    \item 샘플링: 50 Hz
+\end{itemize}
+
+\subsection{지자기계 (Magnetometer)}
+자기장 측정:
+\begin{equation}
+\mathbf{m}_{meas} = \mathbf{R}_{\mathcal{I}}^{\mathcal{B}} \mathbf{m}_{ref}^{\mathcal{I}} + \mathbf{b}_m + \mathbf{n}_m
+\end{equation}
+
+여기서:
+\begin{itemize}
+    \item $\mathbf{m}_{ref}^{\mathcal{I}} = [0.22, -0.04, 0.43]^T$ Gauss (서울 기준)
+    \item $\mathbf{n}_m \sim \mathcal{N}(\mathbf{0}, \sigma_{m,n}^2 \mathbf{I}_3)$
+    \item 샘플링: 100 Hz
+\end{itemize}
+
+%=============================================================================
+\section{제어 시스템}
+%=============================================================================
+
+\subsection{제어 구조}
+계층적 제어 구조:
+\begin{enumerate}
+    \item \textbf{위치 제어기}: 위치 오차 → 원하는 자세 + 추력
+    \item \textbf{자세 제어기}: 자세 오차 → 토크 명령
+    \item \textbf{제어 할당}: 추력/토크 → 모터 명령
+\end{enumerate}
+
+\subsection{위치 PID 제어기}
+\subsubsection{오차 계산}
+\begin{equation}
+\mathbf{e}_{pos} = \mathbf{r}_{des}^{\mathcal{I}} - \mathbf{r}^{\mathcal{I}}
+\end{equation}
+\begin{equation}
+\mathbf{e}_{vel} = \mathbf{v}_{des}^{\mathcal{I}} - \mathbf{v}^{\mathcal{I}}
+\end{equation}
+
+\subsubsection{PID 제어 법칙}
+원하는 가속도:
+\begin{equation}
+\mathbf{a}_{des} = \mathbf{K}_p^{pos} \mathbf{e}_{pos} + \mathbf{K}_i^{pos} \int \mathbf{e}_{pos} dt + \mathbf{K}_d^{pos} \mathbf{e}_{vel}
+\end{equation}
+
+\subsubsection{적분기 Anti-Windup}
+\begin{equation}
+\mathbf{e}_{int} = \text{clamp}\left(\mathbf{e}_{int} + \mathbf{e}_{pos} \Delta t, -\mathbf{L}_{int}, \mathbf{L}_{int}\right)
+\end{equation}
+
+\subsubsection{추력 및 자세 계산}
+원하는 힘:
+\begin{equation}
+\mathbf{F}_{des}^{\mathcal{I}} = m(\mathbf{a}_{des} - \mathbf{g}^{\mathcal{I}})
+\end{equation}
+
+추력 크기:
+\begin{equation}
+T_{cmd} = \|\mathbf{F}_{des}^{\mathcal{I}}\|
+\end{equation}
+
+원하는 Z축 (바디):
+\begin{equation}
+\hat{\mathbf{z}}_b^{des} = -\frac{\mathbf{F}_{des}^{\mathcal{I}}}{\|\mathbf{F}_{des}^{\mathcal{I}}\|}
+\end{equation}
+
+원하는 회전행렬 구성:
+\begin{align}
+\hat{\mathbf{x}}_c &= [\cos\psi_{des}, \sin\psi_{des}, 0]^T \\
+\hat{\mathbf{y}}_b^{des} &= \frac{\hat{\mathbf{z}}_b^{des} \times \hat{\mathbf{x}}_c}{\|\hat{\mathbf{z}}_b^{des} \times \hat{\mathbf{x}}_c\|} \\
+\hat{\mathbf{x}}_b^{des} &= \hat{\mathbf{y}}_b^{des} \times \hat{\mathbf{z}}_b^{des} \\
+\mathbf{R}_{des} &= [\hat{\mathbf{x}}_b^{des}, \hat{\mathbf{y}}_b^{des}, \hat{\mathbf{z}}_b^{des}]
+\end{align}
+
+DCM에서 쿼터니언 변환:
+\begin{equation}
+\mathbf{q}_{des} = \text{DCM2Quat}(\mathbf{R}_{des})
+\end{equation}
+
+\subsection{자세 PID 제어기 (쿼터니언 기반)}
+
+\subsubsection{쿼터니언 오차}
+\begin{equation}
+\mathbf{q}_{err} = \mathbf{q}^{-1} \otimes \mathbf{q}_{des}
+\end{equation}
+
+최단 경로 보장:
+\begin{equation}
+\text{if } q_{err,w} < 0, \quad \mathbf{q}_{err} \leftarrow -\mathbf{q}_{err}
+\end{equation}
+
+\subsubsection{자세 오차 벡터}
+소각도 근사:
+\begin{equation}
+\mathbf{e}_{att} = 2 \mathbf{q}_{err,v} = 2[q_{err,x}, q_{err,y}, q_{err,z}]^T
+\end{equation}
+
+\subsubsection{각속도 오차}
+\begin{equation}
+\mathbf{e}_{\omega} = \boldsymbol{\omega}_{des} - \boldsymbol{\omega}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}}
+\end{equation}
+
+호버링 시 $\boldsymbol{\omega}_{des} = \mathbf{0}$
+
+\subsubsection{토크 명령}
+\begin{equation}
+\boldsymbol{\tau}_{cmd} = \mathbf{K}_p^{att} \mathbf{e}_{att} + \mathbf{K}_i^{att} \int \mathbf{e}_{att} dt + \mathbf{K}_d^{att} \mathbf{e}_{\omega}
+\end{equation}
+
+\subsection{제어 이득}
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{제어기} & $\mathbf{K}_p$ & $\mathbf{K}_i$ & $\mathbf{K}_d$ \\
+\midrule
+위치 (X, Y) & 1.0 & 0.2 & 2.0 \\
+위치 (Z) & 2.0 & 0.2 & 3.0 \\
+자세 (Roll, Pitch) & 8.0 & 0.1 & 2.0 \\
+자세 (Yaw) & 6.0 & 0.1 & 1.5 \\
+\bottomrule
+\end{tabular}
+\caption{PID 제어 이득}
+\end{table}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lc}
+\toprule
+\textbf{적분 제한} & \textbf{값} \\
+\midrule
+위치 적분기 & $[2, 2, 2]$ m$\cdot$s \\
+자세 적분기 & $[1, 1, 1]$ rad$\cdot$s \\
+\bottomrule
+\end{tabular}
+\caption{적분기 제한}
+\end{table}
+
+%=============================================================================
+\section{수치 적분: Stochastic RK4}
+%=============================================================================
+
+\subsection{표준 RK4}
+결정론적 시스템에 대한 4차 Runge-Kutta:
+\begin{align}
+\mathbf{k}_1 &= \mathbf{f}(\mathbf{x}_k, t_k) \\
+\mathbf{k}_2 &= \mathbf{f}(\mathbf{x}_k + \frac{\Delta t}{2}\mathbf{k}_1, t_k + \frac{\Delta t}{2}) \\
+\mathbf{k}_3 &= \mathbf{f}(\mathbf{x}_k + \frac{\Delta t}{2}\mathbf{k}_2, t_k + \frac{\Delta t}{2}) \\
+\mathbf{k}_4 &= \mathbf{f}(\mathbf{x}_k + \Delta t \mathbf{k}_3, t_k + \Delta t) \\
+\mathbf{x}_{k+1} &= \mathbf{x}_k + \frac{\Delta t}{6}(\mathbf{k}_1 + 2\mathbf{k}_2 + 2\mathbf{k}_3 + \mathbf{k}_4)
+\end{align}
+
+\subsection{확률적 적분}
+바이어스 동역학의 프로세스 노이즈를 포함하기 위해 확률적 RK4 사용:
+
+\textbf{노이즈 스케일링:}
+\begin{equation}
+\boldsymbol{\alpha} = [1/6, 2/6, 2/6, 1/6]^T
+\end{equation}
+\begin{equation}
+\beta = \frac{1}{\boldsymbol{\alpha}^T \boldsymbol{\alpha}}
+\end{equation}
+\begin{equation}
+\mathbf{Q}_{scaled} = \frac{\beta}{\Delta t} \text{diag}(\mathbf{Q})
+\end{equation}
+
+\textbf{노이즈 생성:}
+각 RK4 단계 $j$에서:
+\begin{equation}
+\mathbf{w}_j = \sqrt{\mathbf{Q}_{scaled}} \odot \boldsymbol{\eta}_j, \quad \boldsymbol{\eta}_j \sim \mathcal{N}(\mathbf{0}, \mathbf{I})
+\end{equation}
+
+\textbf{적분 단계:}
+\begin{align}
+\mathbf{k}_1 &= \mathbf{f}(\mathbf{x}_k, \mathbf{u}, \mathbf{w}_1) \cdot \Delta t \\
+\mathbf{k}_2 &= \mathbf{f}(\mathbf{x}_k + 0.5\mathbf{k}_1, \mathbf{u}, \mathbf{w}_2) \cdot \Delta t \\
+\mathbf{k}_3 &= \mathbf{f}(\mathbf{x}_k + 0.5\mathbf{k}_2, \mathbf{u}, \mathbf{w}_3) \cdot \Delta t \\
+\mathbf{k}_4 &= \mathbf{f}(\mathbf{x}_k + \mathbf{k}_3, \mathbf{u}, \mathbf{w}_4) \cdot \Delta t \\
+\mathbf{x}_{k+1} &= \mathbf{x}_k + \frac{1}{6}(\mathbf{k}_1 + 2\mathbf{k}_2 + 2\mathbf{k}_3 + \mathbf{k}_4)
+\end{align}
+
+%=============================================================================
+\section{전체 상태 방정식 요약}
+%=============================================================================
+
+\begin{equation}
+\dot{\mathbf{X}} = \begin{bmatrix}
+\dot{\mathbf{r}}^{\mathcal{I}} \\
+\dot{\mathbf{v}}^{\mathcal{B}} \\
+\dot{\mathbf{q}}_{\mathcal{B}}^{\mathcal{I}} \\
+\dot{\boldsymbol{\omega}}_{\mathcal{B}/\mathcal{I}}^{\mathcal{B}} \\
+\dot{\boldsymbol{\omega}}_m \\
+\dot{\mathbf{b}}_g \\
+\dot{\mathbf{b}}_a \\
+\dot{\mathbf{b}}_m
+\end{bmatrix} = \begin{bmatrix}
+\mathbf{R}_{\mathcal{B}}^{\mathcal{I}} \mathbf{v}^{\mathcal{B}} \\[0.5em]
+\frac{1}{m}(\mathbf{F}_{thrust}^{\mathcal{B}} + \mathbf{F}_{dist}^{\mathcal{B}}) + \mathbf{g}^{\mathcal{B}} - [\boldsymbol{\omega}]_{\times}\mathbf{v}^{\mathcal{B}} \\[0.5em]
+\frac{1}{2}\boldsymbol{\Omega}(\boldsymbol{\omega})\mathbf{q} \\[0.5em]
+\mathbf{J}^{-1}(\mathbf{M}_{ctrl}^{\mathcal{B}} + \mathbf{M}_{dist}^{\mathcal{B}} - [\boldsymbol{\omega}]_{\times}\mathbf{J}\boldsymbol{\omega}) \\[0.5em]
+\text{diag}(\tau_i^{-1})(\mathbf{u} - \boldsymbol{\omega}_m) \\[0.5em]
+\mathbf{w}_g \\[0.5em]
+\mathbf{w}_a \\[0.5em]
+-\frac{1}{\tau_m}\mathbf{b}_m + \mathbf{w}_m
+\end{bmatrix}
+\end{equation}
+
+%=============================================================================
+\section{지면 충돌 처리}
+%=============================================================================
+
+NED 좌표계에서 $z \geq 0$이면 지면 또는 지면 아래:
+\begin{equation}
+\text{if } z \geq 0: \quad \dot{\mathbf{r}}^{\mathcal{I}} = \mathbf{0}, \quad \dot{\mathbf{v}}^{\mathcal{B}} = \mathbf{0}, \quad \dot{\boldsymbol{\omega}} = \mathbf{0}
+\end{equation}
+
+%=============================================================================
+\section{파라미터 요약}
+%=============================================================================
+
+\subsection{기체 파라미터}
+\begin{table}[H]
+\centering
+\begin{tabular}{llll}
+\toprule
+\textbf{파라미터} & \textbf{기호} & \textbf{값} & \textbf{단위} \\
+\midrule
+질량 & $m$ & 6.2 & kg \\
+암 길이 & $L$ & 0.96 & m \\
+Roll 관성 & $J_{xx}$ & 0.17 & kg$\cdot$m$^2$ \\
+Pitch 관성 & $J_{yy}$ & 0.175 & kg$\cdot$m$^2$ \\
+Yaw 관성 & $J_{zz}$ & 0.263 & kg$\cdot$m$^2$ \\
+모터 수 & $n$ & 6 & - \\
+\bottomrule
+\end{tabular}
+\caption{기체 물리 파라미터}
+\end{table}
+
+\subsection{모터 파라미터}
+\begin{table}[H]
+\centering
+\begin{tabular}{llll}
+\toprule
+\textbf{파라미터} & \textbf{기호} & \textbf{값} & \textbf{단위} \\
+\midrule
+추력 계수 & $k_T$ & $1.29 \times 10^{-4}$ & N/(rad/s)$^2$ \\
+토크 계수 & $b$ & $2.33 \times 10^{-5}$ & N$\cdot$m/(rad/s)$^2$ \\
+모멘트 비율 & $k_M$ & 0.181 & m \\
+가속 시상수 & $\tau_{up}$ & 0.04 & s \\
+감속 시상수 & $\tau_{down}$ & 0.06 & s \\
+최대 각속도 & $\omega_{max}$ & 650 & rad/s \\
+최소 각속도 & $\omega_{min}$ & 0 & rad/s \\
+\bottomrule
+\end{tabular}
+\caption{모터 파라미터}
+\end{table}
+
+\subsection{센서 파라미터}
+\begin{table}[H]
+\centering
+\begin{tabular}{lllll}
+\toprule
+\textbf{센서} & \textbf{파라미터} & \textbf{값} & \textbf{단위} & \textbf{샘플링} \\
+\midrule
+\multirow{2}{*}{자이로} & ARW & 0.0003394 & rad/s/$\sqrt{\text{Hz}}$ & \multirow{2}{*}{200 Hz} \\
+ & Bias RW & $3.88 \times 10^{-5}$ & rad/s$^2$/$\sqrt{\text{Hz}}$ & \\
+\midrule
+\multirow{2}{*}{가속도계} & VRW & 0.004 & m/s$^2$/$\sqrt{\text{Hz}}$ & \multirow{2}{*}{200 Hz} \\
+ & Bias RW & $6.0 \times 10^{-3}$ & m/s$^3$/$\sqrt{\text{Hz}}$ & \\
+\midrule
+\multirow{2}{*}{GPS} & 위치 노이즈 & [0.3, 0.3, 0.5] & m & \multirow{2}{*}{5 Hz} \\
+ & 속도 노이즈 & [0.05, 0.05, 0.1] & m/s & \\
+\midrule
+기압계 & 노이즈 & 0.5 & m & 50 Hz \\
+\midrule
+\multirow{3}{*}{지자기계} & 노이즈 밀도 & 0.0004 & Gauss/$\sqrt{\text{Hz}}$ & \multirow{3}{*}{100 Hz} \\
+ & Bias RW & $6.4 \times 10^{-6}$ & Gauss/s/$\sqrt{\text{Hz}}$ & \\
+ & 상관시간 & 600 & s & \\
+\bottomrule
+\end{tabular}
+\caption{센서 파라미터}
+\end{table}
+
+\subsection{환경 파라미터}
+\begin{table}[H]
+\centering
+\begin{tabular}{llll}
+\toprule
+\textbf{파라미터} & \textbf{기호} & \textbf{값} & \textbf{단위} \\
+\midrule
+중력 가속도 & $g$ & 9.81 & m/s$^2$ \\
+공기 밀도 & $\rho$ & 1.225 & kg/m$^3$ \\
+자기장 (서울) & $\mathbf{m}_{ref}$ & [0.22, -0.04, 0.43] & Gauss \\
+\bottomrule
+\end{tabular}
+\caption{환경 파라미터}
+\end{table}
+
+\subsection{호버 조건}
+정지 호버링에 필요한 모터 각속도:
+\begin{equation}
+\omega_{hover} = \sqrt{\frac{mg}{n \cdot k_T}} = \sqrt{\frac{6.2 \times 9.81}{6 \times 1.29 \times 10^{-4}}} \approx 280.8 \text{ rad/s}
+\end{equation}
+
+%=============================================================================
+\section{시뮬레이션 구조}
+%=============================================================================
+
+\subsection{시뮬레이션 루프}
+\begin{enumerate}
+    \item 상태 추출 ($\mathbf{r}, \mathbf{v}, \mathbf{q}, \boldsymbol{\omega}, \boldsymbol{\omega}_m, \mathbf{b}$)
+    \item 좌표 변환 ($\mathbf{R}_{\mathcal{B}}^{\mathcal{I}}$, NED 속도)
+    \item 위치 제어 → $\mathbf{q}_{des}$, $T_{cmd}$
+    \item 자세 제어 → $\boldsymbol{\tau}_{cmd}$
+    \item 제어 할당 → $\mathbf{u}$ (모터 명령)
+    \item 외란 계산 ($\boldsymbol{\tau}_{dist}$, $\mathbf{F}_{wind}$)
+    \item 동역학 적분 (SRK4)
+    \item 쿼터니언 정규화 및 연속성
+    \item 로그 저장
+\end{enumerate}
+
+\subsection{파일 구조}
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{파일} & \textbf{설명} \\
+\midrule
+\texttt{params\_init.m} & 파라미터 초기화 \\
+\texttt{drone\_dynamics.m} & 6-DoF 동역학 \\
+\texttt{motor\_dynamics.m} & 모터 1차 시스템 \\
+\texttt{bias\_dynamics.m} & 센서 바이어스 동역학 \\
+\texttt{control\_allocator.m} & 제어 할당 (역/순방향) \\
+\texttt{position\_pid.m} & 위치 PID 제어 \\
+\texttt{attitude\_pid.m} & 자세 PID 제어 \\
+\texttt{srk4.m} & Stochastic RK4 적분 \\
+\texttt{dist\_init.m} & 외란 초기화 \\
+\texttt{dist\_torque.m} & 토크 외란 생성 \\
+\texttt{dist\_wind.m} & 바람 외란 생성 \\
+\texttt{apply\_uncertainty.m} & 파라미터 불확실성 \\
+\bottomrule
+\end{tabular}
+\caption{주요 MATLAB 파일}
+\end{table}
+
+\end{document}
