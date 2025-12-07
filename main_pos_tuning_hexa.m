@@ -17,8 +17,6 @@ dist_preset = 'level2';  % 'nominal', 'level1', 'level2', 'level3'
 % dist_preset = 'paper';  % 'nominal', 'level1', 'level2', 'level3'
 % dist_preset = 'level_hell';  % 'nominal', 'level1', 'level2', 'level3'
 
-
-
 [params, dist_state] = dist_init(params, dist_preset);
 if params.dist.uncertainty.enable
     params_true = apply_uncertainty(params);
@@ -39,21 +37,22 @@ omega_bar2RPM = 60 / (2 * pi);
 Q = zeros(9,9);
 
 %% Waypoints [x, y, z] in NED
+waypoints = [
+    0,   0,  -10;   % WP1: Hover at start
+    10,  0,  -10;   % WP2: Forward
+    10,  10, -10;   % WP3: Right
+    0,   10, -10;   % WP4: Back
+    0,   0,  -10;   % WP5: Return
+];
+
 % waypoints = [
 %     0,   0,  -10;   % WP1: Hover at start
-%     10,  0,  -10;   % WP2: Forward
-%     10,  10, -10;   % WP3: Right
-%     0,   10, -10;   % WP4: Back
+%     0,  0,  -10;   % WP2: Forward
+%     0,  0, -10;   % WP3: Right
+%     0,   0, -10;   % WP4: Back
 %     0,   0,  -10;   % WP5: Return
 % ];
 
-waypoints = [
-    0,   0,  -10;   % WP1: Hover at start
-    0,  0,  -10;   % WP2: Forward
-    0,  0, -10;   % WP3: Right
-    0,   0, -10;   % WP4: Back
-    0,   0,  -10;   % WP5: Return
-];
 n_wp = size(waypoints, 1);
 wp_idx = 1;
 wp_threshold = 0.5;  % [m] arrival threshold
@@ -254,3 +253,19 @@ fprintf('Preset: %s\n', dist_preset);
 fprintf('Final position error: %.3f m\n', norm(X(1:3,end) - POS_DES(:,end)));
 fprintf('Max position error: %.3f m\n', max(vecnorm(pos_err)));
 fprintf('Max attitude: %.2f deg\n', max(abs(rad2deg(euler(:)))));
+
+
+%% Export to CSV
+data = [t', X(1:3,:)', POS_DES', rad2deg(euler)', X(11:13,:)', U', X(14:19,:)', ...
+        TAU_DIST', F_DIST'];
+header = {'t','pos_x','pos_y','pos_z','pos_des_x','pos_des_y','pos_des_z',...
+          'euler_roll','euler_pitch','euler_yaw','omega_p','omega_q','omega_r',...
+          'motor_cmd_1','motor_cmd_2','motor_cmd_3','motor_cmd_4','motor_cmd_5','motor_cmd_6',...
+          'motor_actual_1','motor_actual_2','motor_actual_3','motor_actual_4','motor_actual_5','motor_actual_6',...
+          'tau_dist_x','tau_dist_y','tau_dist_z','F_dist_x','F_dist_y','F_dist_z'};
+filename = sprintf('pos_pid_%s.csv', dist_preset);
+fid = fopen(filename, 'w');
+fprintf(fid, '%s,', header{1:end-1}); fprintf(fid, '%s\n', header{end});
+fclose(fid);
+dlmwrite(filename, data, '-append', 'precision', '%.6f');
+fprintf('Data saved to: %s\n', filename);
