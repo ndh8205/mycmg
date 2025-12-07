@@ -13,9 +13,9 @@ params = params_init('hexa');
 %% Disturbance settings
 % dist_preset = 'nominal';
 % dist_preset = 'level1';
-% dist_preset = 'level2';
+dist_preset = 'level2';
 % dist_preset = 'level3';
-dist_preset = 'level_hell';
+% dist_preset = 'level_hell';
 
 [params, dist_state] = dist_init(params, dist_preset);
 if params.dist.uncertainty.enable
@@ -251,3 +251,19 @@ fprintf('Max position error: %.3f m\n', max(vecnorm(pos_err)));
 fprintf('Max attitude: %.2f deg\n', max(abs(rad2deg(euler(:)))));
 fprintf('Waypoints reached: %d/%d\n', wp_idx, n_wp);
 fprintf('====================================\n');
+
+%% Export to CSV
+data = [t', X(1:3,:)', POS_DES', rad2deg(euler)', X(11:13,:)', U', X(14:19,:)', ...
+        TAU_DIST', F_DIST', TAU_CMD'];
+header = {'t','pos_x','pos_y','pos_z','pos_des_x','pos_des_y','pos_des_z',...
+          'euler_roll','euler_pitch','euler_yaw','omega_p','omega_q','omega_r',...
+          'motor_cmd_1','motor_cmd_2','motor_cmd_3','motor_cmd_4','motor_cmd_5','motor_cmd_6',...
+          'motor_actual_1','motor_actual_2','motor_actual_3','motor_actual_4','motor_actual_5','motor_actual_6',...
+          'tau_dist_x','tau_dist_y','tau_dist_z','F_dist_x','F_dist_y','F_dist_z',...
+          'tau_cmd_x','tau_cmd_y','tau_cmd_z'};
+filename = sprintf('pos_smc_%s.csv', dist_preset);
+fid = fopen(filename, 'w');
+fprintf(fid, '%s,', header{1:end-1}); fprintf(fid, '%s\n', header{end});
+fclose(fid);
+dlmwrite(filename, data, '-append', 'precision', '%.6f');
+fprintf('Data saved to: %s\n', filename);
