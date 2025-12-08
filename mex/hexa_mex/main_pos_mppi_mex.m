@@ -1,5 +1,5 @@
 %% main_pos_mppi_mex.m - Hexarotor MPPI Position Control with Waypoints
-% CUDA MEX version with comprehensive diagnostics
+% CUDA MEX version with motor dynamics
 clear; clc; close all;
 
 addpath(genpath('math'));
@@ -56,25 +56,22 @@ wp_idx = 1;
 wp_threshold = 0.5;  % [m] arrival threshold
 yaw_des = 0;
 
-%% MPPI Parameters
-mppi_params.K = 4096*2;         % Number of samples
-mppi_params.N = 50;             % Horizon steps (1.0s at 50Hz)
-mppi_params.dt = dt_ctrl;       % Control period
-mppi_params.lambda = 1000.0;      % Temperature
-mppi_params.nu = 10.0;          % Importance sampling parameter
-mppi_params.sigma = 300 / omega_bar2RPM;  % Noise std [rad/s]
-
-% Cost weights
-mppi_params.w_pos_xy = 10.0;    % Position XY
-mppi_params.w_pos_z = 10.0;     % Position Z (altitude)
-mppi_params.w_vel_xy = 5.0;     % Velocity XY
-mppi_params.w_vel_z = 5.0;      % Velocity Z
-mppi_params.w_att = 5.0;       % Attitude (roll/pitch)
-mppi_params.w_yaw = 10.0;       % Yaw angle
-mppi_params.w_omega_rp = 5.0;  % Angular velocity roll/pitch
-mppi_params.w_omega_yaw = 0.1; % Angular velocity yaw
-mppi_params.w_terminal = 10.0;  % Terminal cost multiplier
-mppi_params.R = 0.00001;         % Control cost (very small)
+mppi_params.K = 4096*10;
+mppi_params.N = 100;
+mppi_params.dt = dt_ctrl;
+mppi_params.lambda = 800.7310;
+mppi_params.nu = 10.0;
+mppi_params.sigma = 15.1658;  % 144.8 RPM
+mppi_params.w_pos_xy = 1000.0037;
+mppi_params.w_pos_z = 1000.2281;
+mppi_params.w_vel_xy = 1000.2683;
+mppi_params.w_vel_z = 529.8645;
+mppi_params.w_att = 142.9748;
+mppi_params.w_yaw = 3776.0578;
+mppi_params.w_omega_rp = 0.0075;
+mppi_params.w_omega_yaw = 360.6177;
+mppi_params.w_terminal = 1.2051;
+mppi_params.R = 1.81e-08;
 
 %% Drone parameters for MEX (single precision struct)
 drone_params.m = single(params.drone.body.m);
@@ -87,6 +84,8 @@ drone_params.k_M = single(params.drone.motor.k_M);
 drone_params.L = single(params.drone.body.L);
 drone_params.omega_max = single(params.drone.motor.omega_b_max);
 drone_params.omega_min = single(params.drone.motor.omega_b_min);
+drone_params.tau_up = single(params.drone.motor.tau_up);
+drone_params.tau_down = single(params.drone.motor.tau_down);
 
 %% Initial state (28x1 for hexa)
 m = params.drone.body.m;
@@ -109,6 +108,10 @@ x0(20:28) = zeros(9, 1);              % biases
 mppi_state.u_seq = single(omega_hover * ones(6, mppi_params.N));
 mppi_state.pos_des = single(waypoints(1,:)');
 mppi_state.yaw_des = single(yaw_des);
+
+%% Motor state estimator initialization
+omega_motor_est = omega_hover * ones(6,1);
+u_prev = omega_hover * ones(6,1);
 
 %% Data storage
 X = zeros(28, N_sim);
@@ -159,11 +162,21 @@ for k = 1:N_sim-1
     if mod(k-1, ctrl_decimation) == 0
         ctrl_idx = ctrl_idx + 1;
         
+        % Update motor state estimate (1st order dynamics)
+        for i = 1:6
+            if u_prev(i) >= omega_motor_est(i)
+                tau_i = params.drone.motor.tau_up;
+            else
+                tau_i = params.drone.motor.tau_down;
+            end
+            omega_motor_est(i) = omega_motor_est(i) + dt_ctrl * (u_prev(i) - omega_motor_est(i)) / tau_i;
+        end
+        
         % Update desired position
         mppi_state.pos_des = single(pos_des_current);
         
-        % Prepare state for MEX (13x1, single precision)
-        x_mppi = single([x_k(1:3); x_k(4:6); x_k(7:10); x_k(11:13)]);
+        % Prepare state for MEX (19x1, single precision)
+        x_mppi = single([x_k(1:3); x_k(4:6); x_k(7:10); x_k(11:13); omega_motor_est]);
         
         % Shift control sequence (warm start)
         mppi_state.u_seq(:, 1:end-1) = mppi_state.u_seq(:, 2:end);
@@ -178,6 +191,7 @@ for k = 1:N_sim-1
         % Update state
         u_current = double(u_opt);
         mppi_state.u_seq = u_seq_new;
+        u_prev = u_current;
         
         % Store diagnostics
         MPPI_STATS.min_cost(ctrl_idx) = stats.min_cost;

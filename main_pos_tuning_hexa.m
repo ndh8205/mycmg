@@ -10,9 +10,9 @@ addpath(genpath('disturbance'));
 params = params_init('hexa');
 
 %% Disturbance settings
-% dist_preset = 'nominal';  % 'nominal', 'level1', 'level2', 'level3'
+dist_preset = 'nominal';  % 'nominal', 'level1', 'level2', 'level3'
 % dist_preset = 'level1';  % 'nominal', 'level1', 'level2', 'level3'
-dist_preset = 'level2';  % 'nominal', 'level1', 'level2', 'level3'
+% dist_preset = 'level2';  % 'nominal', 'level1', 'level2', 'level3'
 % dist_preset = 'level3';  % 'nominal', 'level1', 'level2', 'level3'
 % dist_preset = 'paper';  % 'nominal', 'level1', 'level2', 'level3'
 % dist_preset = 'level_hell';  % 'nominal', 'level1', 'level2', 'level3'

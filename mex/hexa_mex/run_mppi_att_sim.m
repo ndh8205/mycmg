@@ -45,6 +45,8 @@ drone_params.k_M = single(params.drone.motor.k_M);
 drone_params.L = single(params.drone.body.L);
 drone_params.omega_max = single(params.drone.motor.omega_b_max);
 drone_params.omega_min = single(params.drone.motor.omega_b_min);
+drone_params.tau_up = single(params.drone.motor.tau_up);
+drone_params.tau_down = single(params.drone.motor.tau_down);
 
 %% Initial state
 m = params.drone.body.m;
@@ -75,6 +77,10 @@ yaw_des = 0;
 mppi_state.u_seq = single(omega_hover * ones(6, mppi_params.N));
 mppi_state.pos_des = single(pos_des);
 mppi_state.yaw_des = single(yaw_des);
+
+%% Motor state estimator initialization
+omega_motor_est = omega_hover * ones(6,1);
+u_prev = omega_hover * ones(6,1);
 
 %% Data storage
 X = zeros(28, N_sim);
@@ -109,7 +115,18 @@ for k = 1:N_sim-1
     
     % MPPI control update
     if mod(k-1, ctrl_decimation) == 0
-        x_mppi = single([x_k(1:3); x_k(4:6); x_k(7:10); x_k(11:13)]);
+        % Update motor state estimate (1st order dynamics)
+        for i = 1:6
+            if u_prev(i) >= omega_motor_est(i)
+                tau_i = params.drone.motor.tau_up;
+            else
+                tau_i = params.drone.motor.tau_down;
+            end
+            omega_motor_est(i) = omega_motor_est(i) + dt_ctrl * (u_prev(i) - omega_motor_est(i)) / tau_i;
+        end
+        
+        % Prepare state (19x1)
+        x_mppi = single([x_k(1:3); x_k(4:6); x_k(7:10); x_k(11:13); omega_motor_est]);
         mppi_state.u_seq(:, 1:end-1) = mppi_state.u_seq(:, 2:end);
         
         tic_mppi = tic;
@@ -120,6 +137,7 @@ for k = 1:N_sim-1
         
         u_current = double(u_opt);
         mppi_state.u_seq = u_seq_new;
+        u_prev = u_current;
         
         ess_log(end+1) = stats.effective_sample_size;
         sat_log(end+1) = stats.saturation_ratio;
@@ -195,15 +213,14 @@ omega_ss = X(11:13, ss_start_idx:end);
 oscillation = mean(std(rad2deg(omega_ss), 0, 2));
 
 %% Phase Portrait Envelope Metrics
-% Envelope thresholds (relaxed for MPPI)
-env.roll_ang = 2.0;    % deg (was 0.1)
-env.roll_rate = 5.0;   % deg/s (was 0.5)
+env.roll_ang = 2.0;    % deg
+env.roll_rate = 5.0;   % deg/s
 env.pitch_ang = 2.0;   % deg
 env.pitch_rate = 5.0;  % deg/s
-env.yaw_ang = 5.0;     % deg (was 0.2)
+env.yaw_ang = 5.0;     % deg
 env.yaw_rate = 5.0;    % deg/s
-env.alt_err = 0.5;     % m (was 0.05)
-env.alt_vel = 1.0;     % m/s (was 0.1)
+env.alt_err = 0.5;     % m
+env.alt_vel = 1.0;     % m/s
 
 % Compute NED velocity for altitude rate
 vel_ned_all = zeros(3, N_sim);
@@ -211,9 +228,9 @@ for kk = 1:N_sim
     R_b2n = GetDCM_QUAT(X(7:10,kk));
     vel_ned_all(:,kk) = R_b2n * X(4:6,kk);
 end
-alt_vel_all = -vel_ned_all(3,:);  % positive up
+alt_vel_all = -vel_ned_all(3,:);
 
-% Normalized distance to target (d < 1 means inside envelope)
+% Normalized distance to target
 d_roll = sqrt((rad2deg(euler(1,:))/env.roll_ang).^2 + (rad2deg(X(11,:))/env.roll_rate).^2);
 d_pitch = sqrt((rad2deg(euler(2,:))/env.pitch_ang).^2 + (rad2deg(X(12,:))/env.pitch_rate).^2);
 d_yaw = sqrt((rad2deg(euler(3,:))/env.yaw_ang).^2 + (rad2deg(X(13,:))/env.yaw_rate).^2);
@@ -307,26 +324,13 @@ end
 
 %% ========== HELPER FUNCTION ==========
 function env = compute_envelope_metrics(d, t)
-% compute_envelope_metrics: Phase portrait envelope analysis
-%
-% d < 1 means inside envelope
-% 
-% Outputs:
-%   env.t_enter     - first time d < 1 [s]
-%   env.stay_ratio  - ratio of time d < 1 after first entry
-%   env.final_d     - final normalized distance
-%   env.max_d_after - max d after first entry (chattering indicator)
-%   env.mean_d_ss   - mean d in last 50%
-
     t_end = t(end);
     N = length(d);
     
-    % Find first entry (d < 1)
     inside = d < 1;
     first_idx = find(inside, 1, 'first');
     
     if isempty(first_idx)
-        % Never entered
         env.t_enter = t_end;
         env.stay_ratio = 0;
         env.final_d = d(end);
@@ -334,18 +338,10 @@ function env = compute_envelope_metrics(d, t)
         env.mean_d_ss = mean(d(round(N*0.5):end));
     else
         env.t_enter = t(first_idx);
-        
-        % Stay ratio after first entry
         after_entry = inside(first_idx:end);
         env.stay_ratio = sum(after_entry) / length(after_entry);
-        
-        % Final distance
         env.final_d = d(end);
-        
-        % Max distance after entry (chattering)
         env.max_d_after = max(d(first_idx:end));
-        
-        % Mean distance in steady-state
         ss_idx = round(N*0.5);
         env.mean_d_ss = mean(d(ss_idx:end));
     end
