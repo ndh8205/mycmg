@@ -1,19 +1,12 @@
 /*
  * hexa_mppi_mex.cu - Hexarotor MPPI Controller (CUDA MEX)
  * 
- * 6D motor speed direct control with noise
- * State: 13x1 [pos(3), vel(3), quat(4), omega(3)]
- * Control: 6x1 [omega_1, ..., omega_6] motor speeds [rad/s]
+ * 6D motor speed direct control with motor dynamics
+ * State: 19x1 [pos(3), vel(3), quat(4), omega(3), omega_motor(6)]
+ * Control: 6x1 [omega_1, ..., omega_6] motor speed commands [rad/s]
  * 
  * Compile: mexcuda hexa_mppi_mex.cu -lcurand
  * Usage:   [u_opt, u_seq_new, stats] = hexa_mppi_mex(x0, u_seq, pos_des, yaw_des, params, mppi_params)
- *
- * Cost weights (separated):
- *   w_pos_xy, w_pos_z      - position XY vs Z
- *   w_vel_xy, w_vel_z      - velocity XY vs Z
- *   w_att                  - attitude (roll/pitch via qw)
- *   w_yaw                  - yaw angle
- *   w_omega_rp, w_omega_yaw - angular velocity roll/pitch vs yaw
  */
 
 #include "mex.h"
@@ -67,8 +60,8 @@ __global__ void hexa_mppi_rollout_kernel(
     float m, float Jxx, float Jyy, float Jzz, float g,
     float k_T, float k_M, float L,
     float omega_max, float omega_min,
+    float tau_up, float tau_down,
     float dt, int N, int K,
-    // Separated cost weights
     float w_pos_xy, float w_pos_z,
     float w_vel_xy, float w_vel_z,
     float w_att, float w_yaw,
@@ -78,11 +71,15 @@ __global__ void hexa_mppi_rollout_kernel(
     int k = blockIdx.x * blockDim.x + threadIdx.x;
     if (k >= K) return;
     
-    // Load initial state
+    // Load initial state (19 states)
     float px = x0[0], py = x0[1], pz = x0[2];
     float vx = x0[3], vy = x0[4], vz = x0[5];
     float qw = x0[6], qx = x0[7], qy = x0[8], qz = x0[9];
     float wx = x0[10], wy = x0[11], wz = x0[12];
+    
+    // Motor states
+    float wm1 = x0[13], wm2 = x0[14], wm3 = x0[15];
+    float wm4 = x0[16], wm5 = x0[17], wm6 = x0[18];
     
     float pd_x = pos_des[0], pd_y = pos_des[1], pd_z = pos_des[2];
     
@@ -113,10 +110,11 @@ __global__ void hexa_mppi_rollout_kernel(
         float un1 = u_seq[0 + t*6], un2 = u_seq[1 + t*6], un3 = u_seq[2 + t*6];
         float un4 = u_seq[3 + t*6], un5 = u_seq[4 + t*6], un6 = u_seq[5 + t*6];
         
-        // Check saturation before clipping
+        // Motor speed commands (with noise)
         float u1_raw = un1 + d1, u2_raw = un2 + d2, u3_raw = un3 + d3;
         float u4_raw = un4 + d4, u5_raw = un5 + d5, u6_raw = un6 + d6;
         
+        // Check saturation
         if (u1_raw < omega_min || u1_raw > omega_max) sat_cnt++;
         if (u2_raw < omega_min || u2_raw > omega_max) sat_cnt++;
         if (u3_raw < omega_min || u3_raw > omega_max) sat_cnt++;
@@ -124,6 +122,7 @@ __global__ void hexa_mppi_rollout_kernel(
         if (u5_raw < omega_min || u5_raw > omega_max) sat_cnt++;
         if (u6_raw < omega_min || u6_raw > omega_max) sat_cnt++;
         
+        // Saturate commands
         float u1 = fminf(fmaxf(u1_raw, omega_min), omega_max);
         float u2 = fminf(fmaxf(u2_raw, omega_min), omega_max);
         float u3 = fminf(fmaxf(u3_raw, omega_min), omega_max);
@@ -134,24 +133,18 @@ __global__ void hexa_mppi_rollout_kernel(
         // ===== Running Cost (SEPARATED) =====
         float ex = px - pd_x, ey = py - pd_y, ez = pz - pd_z;
         
-        // Position cost: XY vs Z
         float cost_pos = w_pos_xy * (ex*ex + ey*ey) + w_pos_z * ez*ez;
-        
-        // Velocity cost: XY vs Z
         float cost_vel = w_vel_xy * (vx*vx + vy*vy) + w_vel_z * vz*vz;
         
-        // Attitude cost (roll/pitch via qw)
-        float cost_att = w_att * (1.0f - qw*qw);
+        float R33_att = 1.0f - 2.0f*(qx*qx + qy*qy);
+        float cost_att = -w_att * logf(fmaxf(R33_att, 0.01f));
         
-        // Yaw cost
         float yaw_curr = atan2f(2.0f*(qw*qz + qx*qy), 1.0f - 2.0f*(qy*qy + qz*qz));
         float yaw_err = atan2f(sinf(yaw_curr - yaw_des), cosf(yaw_curr - yaw_des));
         float cost_yaw = w_yaw * yaw_err * yaw_err;
         
-        // Angular velocity cost: roll/pitch rate vs yaw rate
         float cost_omega = w_omega_rp * (wx*wx + wy*wy) + w_omega_yaw * wz*wz;
         
-        // Control cost
         float delta_sq = d1*d1 + d2*d2 + d3*d3 + d4*d4 + d5*d5 + d6*d6;
         float un_delta = un1*d1 + un2*d2 + un3*d3 + un4*d4 + un5*d5 + un6*d6;
         float un_sq = un1*un1 + un2*un2 + un3*un3 + un4*un4 + un5*un5 + un6*un6;
@@ -164,9 +157,32 @@ __global__ void hexa_mppi_rollout_kernel(
         S_omega += cost_omega * dt;
         S_ctrl += cost_ctrl * dt;
         
-        // ===== Dynamics =====
-        float w1sq = u1*u1, w2sq = u2*u2, w3sq = u3*u3;
-        float w4sq = u4*u4, w5sq = u5*u5, w6sq = u6*u6;
+        // ===== Motor Dynamics =====
+        float tau1 = (u1 >= wm1) ? tau_up : tau_down;
+        float tau2 = (u2 >= wm2) ? tau_up : tau_down;
+        float tau3 = (u3 >= wm3) ? tau_up : tau_down;
+        float tau4 = (u4 >= wm4) ? tau_up : tau_down;
+        float tau5 = (u5 >= wm5) ? tau_up : tau_down;
+        float tau6 = (u6 >= wm6) ? tau_up : tau_down;
+        
+        wm1 += (u1 - wm1) * dt / tau1;
+        wm2 += (u2 - wm2) * dt / tau2;
+        wm3 += (u3 - wm3) * dt / tau3;
+        wm4 += (u4 - wm4) * dt / tau4;
+        wm5 += (u5 - wm5) * dt / tau5;
+        wm6 += (u6 - wm6) * dt / tau6;
+        
+        // Saturate motor speeds
+        wm1 = fminf(fmaxf(wm1, omega_min), omega_max);
+        wm2 = fminf(fmaxf(wm2, omega_min), omega_max);
+        wm3 = fminf(fmaxf(wm3, omega_min), omega_max);
+        wm4 = fminf(fmaxf(wm4, omega_min), omega_max);
+        wm5 = fminf(fmaxf(wm5, omega_min), omega_max);
+        wm6 = fminf(fmaxf(wm6, omega_min), omega_max);
+        
+        // ===== Rigid Body Dynamics (using actual motor speeds) =====
+        float w1sq = wm1*wm1, w2sq = wm2*wm2, w3sq = wm3*wm3;
+        float w4sq = wm4*wm4, w5sq = wm5*wm5, w6sq = wm6*wm6;
         
         float T = k_T * (w1sq + w2sq + w3sq + w4sq + w5sq + w6sq);
         float tau_x = kL * (-0.5f*w1sq + 0.5f*w2sq + w3sq + 0.5f*w4sq - 0.5f*w5sq - w6sq);
@@ -204,52 +220,64 @@ __global__ void hexa_mppi_rollout_kernel(
         float qy_dot = 0.5f * ( wy*qw - wz*qx + wx*qz);
         float qz_dot = 0.5f * ( wz*qw + wy*qx - wx*qy);
         
-        float Jwx = Jxx * wx, Jwy = Jyy * wy, Jwz = Jzz * wz;
-        float wx_dot = (tau_x - (wy*Jwz - wz*Jwy)) / Jxx;
-        float wy_dot = (tau_y - (wz*Jwx - wx*Jwz)) / Jyy;
-        float wz_dot = (tau_z - (wx*Jwy - wy*Jwx)) / Jzz;
+        float Jw_x = Jxx * wx;
+        float Jw_y = Jyy * wy;
+        float Jw_z = Jzz * wz;
         
-        px += px_dot * dt; py += py_dot * dt; pz += pz_dot * dt;
-        vx += vx_dot * dt; vy += vy_dot * dt; vz += vz_dot * dt;
-        qw += qw_dot * dt; qx += qx_dot * dt; qy += qy_dot * dt; qz += qz_dot * dt;
-        wx += wx_dot * dt; wy += wy_dot * dt; wz += wz_dot * dt;
+        float wx_dot = (tau_x - (wy*Jw_z - wz*Jw_y)) / Jxx;
+        float wy_dot = (tau_y - (wz*Jw_x - wx*Jw_z)) / Jyy;
+        float wz_dot = (tau_z - (wx*Jw_y - wy*Jw_x)) / Jzz;
         
+        // Euler integration
+        px += px_dot * dt;
+        py += py_dot * dt;
+        pz += pz_dot * dt;
+        vx += vx_dot * dt;
+        vy += vy_dot * dt;
+        vz += vz_dot * dt;
+        qw += qw_dot * dt;
+        qx += qx_dot * dt;
+        qy += qy_dot * dt;
+        qz += qz_dot * dt;
+        wx += wx_dot * dt;
+        wy += wy_dot * dt;
+        wz += wz_dot * dt;
+        
+        // Normalize quaternion
         float qnorm = sqrtf(qw*qw + qx*qx + qy*qy + qz*qz);
-        if (qnorm > 1e-8f) {
-            qw /= qnorm; qx /= qnorm; qy /= qnorm; qz /= qnorm;
-        }
+        qw /= qnorm; qx /= qnorm; qy /= qnorm; qz /= qnorm;
     }
     
     // Terminal cost
     float ex_T = px - pd_x, ey_T = py - pd_y, ez_T = pz - pd_z;
-    S_pos += w_terminal * (w_pos_xy * (ex_T*ex_T + ey_T*ey_T) + w_pos_z * ez_T*ez_T);
-    S_att += w_att * (1.0f - qw*qw);
-    S_vel += 0.5f * w_terminal * (w_vel_xy * (vx*vx + vy*vy) + w_vel_z * vz*vz);
+    float cost_pos_T = w_terminal * (ex_T*ex_T + ey_T*ey_T + ez_T*ez_T);
+    float R33_T = 1.0f - 2.0f*(qx*qx + qy*qy);
+    float cost_att_T = -w_att * logf(fmaxf(R33_T, 0.01f));
+    float cost_vel_T = 0.5f * w_terminal * (vx*vx + vy*vy + vz*vz);
     
-    // Store total cost
-    costs[k] = S_pos + S_vel + S_att + S_yaw + S_omega + S_ctrl;
+    float S_total = S_pos + S_vel + S_att + S_yaw + S_omega + S_ctrl + cost_pos_T + cost_att_T + cost_vel_T;
     
-    // Store cost breakdown
+    costs[k] = S_total;
+    sat_count[k] = sat_cnt;
+    
     cost_breakdown[0*K + k] = S_pos;
     cost_breakdown[1*K + k] = S_vel;
     cost_breakdown[2*K + k] = S_att;
     cost_breakdown[3*K + k] = S_yaw;
     cost_breakdown[4*K + k] = S_omega;
     cost_breakdown[5*K + k] = S_ctrl;
-    
-    sat_count[k] = sat_cnt;
 }
 
-// Compute importance weights
-__global__ void compute_weights_kernel(float* costs, float* weights, float min_cost, float lambda, int K)
+// Compute weights kernel
+__global__ void compute_weights_kernel(
+    const float* costs, float* weights, float min_cost, float lambda, int K)
 {
     int k = blockIdx.x * blockDim.x + threadIdx.x;
-    if (k < K) {
-        weights[k] = expf(-(costs[k] - min_cost) / lambda);
-    }
+    if (k >= K) return;
+    weights[k] = expf(-(costs[k] - min_cost) / lambda);
 }
 
-// Weighted sum of perturbations
+// Weighted sum kernel
 __global__ void weighted_sum_kernel(
     const float* du_all, const float* weights, float* du_weighted, 
     float weight_sum, int N, int K)
@@ -292,6 +320,8 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
     float L = (float)mxGetScalar(mxGetField(prhs[4], 0, "L"));
     float omega_max = (float)mxGetScalar(mxGetField(prhs[4], 0, "omega_max"));
     float omega_min = (float)mxGetScalar(mxGetField(prhs[4], 0, "omega_min"));
+    float tau_up = (float)mxGetScalar(mxGetField(prhs[4], 0, "tau_up"));
+    float tau_down = (float)mxGetScalar(mxGetField(prhs[4], 0, "tau_down"));
     
     // MPPI parameters
     int K = (int)mxGetScalar(mxGetField(prhs[5], 0, "K"));
@@ -314,11 +344,11 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
     
     float nu_c = 1.0f - 1.0f / nu;
     
-    // Allocate GPU memory
+    // Allocate GPU memory (state now 19)
     if (!initialized || K != K_alloc || N != N_alloc) {
         if (initialized) cleanup();
         
-        cudaMalloc(&d_x0, 13 * sizeof(float));
+        cudaMalloc(&d_x0, 19 * sizeof(float));
         cudaMalloc(&d_u_seq, 6 * N * sizeof(float));
         cudaMalloc(&d_pos_des, 3 * sizeof(float));
         cudaMalloc(&d_noise, 6 * N * K * sizeof(float));
@@ -338,7 +368,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         N_alloc = N;
     }
     
-    cudaMemcpy(d_x0, h_x0, 13 * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_x0, h_x0, 19 * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_u_seq, h_u_seq, 6 * N * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_pos_des, h_pos_des, 3 * sizeof(float), cudaMemcpyHostToDevice);
     
@@ -353,6 +383,7 @@ void mexFunction(int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[])
         d_x0, d_u_seq, d_pos_des, d_noise, d_costs, d_du_all,
         d_cost_breakdown, d_sat_count,
         yaw_des, m, Jxx, Jyy, Jzz, g, k_T, k_M, L, omega_max, omega_min,
+        tau_up, tau_down,
         dt, N, K,
         w_pos_xy, w_pos_z, w_vel_xy, w_vel_z,
         w_att, w_yaw, w_omega_rp, w_omega_yaw,

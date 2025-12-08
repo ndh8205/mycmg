@@ -18,8 +18,8 @@ params = params_init('hexa');
 
 % Fixed MPPI settings
 K = 4096;
-N = 50;
-dt_ctrl = 0.02;  % 50 Hz
+N = 100;
+dt_ctrl = 0.01;  % 100 Hz
 nu = 10.0;       % Fixed
 t_end = 20;      % 20초 평가
 
@@ -29,33 +29,33 @@ omega_bar2RPM = 60 / (2 * pi);
 % Based on user's working params as center
 
 % Core MPPI
-lambda_var   = optimizableVariable('lambda',   [10, 100]);
-sigma_var    = optimizableVariable('sigma',    [150, 500]);   % RPM
-R_var        = optimizableVariable('R',        [1e-5, 1e-3], 'Transform', 'log');
-w_terminal_var = optimizableVariable('w_terminal', [2, 20]);
+lambda_var   = optimizableVariable('lambda',   [5.00e-02, 1.00e+04]);
+sigma_var    = optimizableVariable('sigma',    [1.65e+02, 5.55e+02]);   % RPM
+R_var        = optimizableVariable('R',        [2.50e-06, 1.00e+01], 'Transform', 'log');
+w_terminal_var = optimizableVariable('w_terminal', [8.01e+01, 1.52e+02]);
 
 % Position weights
-w_pos_xy_var = optimizableVariable('w_pos_xy', [5, 30]);
-w_pos_z_var  = optimizableVariable('w_pos_z',  [5, 30]);
+w_pos_xy_var = optimizableVariable('w_pos_xy', [1.30e-02, 2.37e+02]);
+w_pos_z_var  = optimizableVariable('w_pos_z',  [5.48e-01, 1.63e+02]);
 
 % Velocity weights
-w_vel_xy_var = optimizableVariable('w_vel_xy', [1, 15]);
-w_vel_z_var  = optimizableVariable('w_vel_z',  [0.5, 10]);
+w_vel_xy_var = optimizableVariable('w_vel_xy', [0.05, 2.15e+03]);
+w_vel_z_var  = optimizableVariable('w_vel_z',  [0.05, 5.47e+02]);
 
 % Attitude weights
-w_att_var    = optimizableVariable('w_att',    [2, 20]);
-w_yaw_var    = optimizableVariable('w_yaw',    [10, 40]);
+w_att_var    = optimizableVariable('w_att',    [0.2, 3.00e+03]);
+w_yaw_var    = optimizableVariable('w_yaw',    [0.001, 3.15e+03]);
 
 % Angular velocity weights
-w_omega_rp_var  = optimizableVariable('w_omega_rp',  [0.5, 10]);
-w_omega_yaw_var = optimizableVariable('w_omega_yaw', [1, 15]);
+w_omega_rp_var  = optimizableVariable('w_omega_rp',  [0.005, 9.83e+02]);
+w_omega_yaw_var = optimizableVariable('w_omega_yaw', [0.001, 1.63e+03]);
 
 vars = [lambda_var, sigma_var, R_var, w_terminal_var, ...
         w_pos_xy_var, w_pos_z_var, w_vel_xy_var, w_vel_z_var, ...
         w_att_var, w_yaw_var, w_omega_rp_var, w_omega_yaw_var];
 
 %% Initial point (user's working parameters)
-init_point = table(13.69, 190.8, 2.06e-05, 3.15, 8.64, 26.65, 1.05, 1.32, 11.11, 28.44, 5.61, 8.25, ...
+init_point = table(717.64, 363.9, 2.50e-06, 116.07, 181.10, 108.29, 1319.31, 386.42, 37.35, 2496.58, 633.88, 1011.16, ...
     'VariableNames', {'lambda','sigma','R','w_terminal',...
     'w_pos_xy','w_pos_z','w_vel_xy','w_vel_z',...
     'w_att','w_yaw','w_omega_rp','w_omega_yaw'});
@@ -75,7 +75,7 @@ fprintf('Cost = RMSE(roll,pitch,yaw,alt) + settling + drift\n');
 fprintf('===========================================\n\n');
 
 opt_results = bayesopt(obj_fun, vars, ...
-    'MaxObjectiveEvaluations', 500, ...
+    'MaxObjectiveEvaluations', 100, ...
     'UseParallel', true, ...
     'InitialX', init_point, ...
     'AcquisitionFunctionName', 'expected-improvement-plus', ...
